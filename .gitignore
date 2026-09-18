@@ -1,0 +1,15 @@
+# Test binaries and coverage
+*.test
+*.out
+coverage.html
+
+# Go
+go.work
+go.work.sum
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
