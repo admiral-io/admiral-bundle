@@ -13,3 +13,4 @@ go.work.sum
 *.swp
 *.swo
 *~
+TASK.md

@@ -55,8 +55,8 @@ func sha(data []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// wrapperChart is the deploy repository's shape: a thin chart around one
-// upstream dependency, lock committed, charts/ not.
+// wrapperChart is the common shape of a deployment chart: a thin chart
+// around one upstream dependency, lock committed, charts/ not.
 func wrapperChart(t *testing.T, repoURL, lock string) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -163,4 +163,50 @@ func TestResolveChartURL(t *testing.T) {
 	got, err = resolveChartURL("https://charts.example.com/stable", "https://github.com/acme/releases/openfga-0.3.9.tgz")
 	require.NoError(t, err)
 	assert.Equal(t, "https://github.com/acme/releases/openfga-0.3.9.tgz", got)
+}
+
+// A file:// dependency is a chart with dependencies of its own; it is
+// closed the same way, and what it lacks is named with its place.
+func TestPackClosesADirectoryDependencyInTurn(t *testing.T) {
+	base := t.TempDir()
+	write := func(rel, data string) {
+		p := filepath.Join(base, filepath.FromSlash(rel))
+		require.NoError(t, os.MkdirAll(filepath.Dir(p), 0o755))
+		require.NoError(t, os.WriteFile(p, []byte(data), 0o644))
+	}
+	write("common/Chart.yaml", "apiVersion: v2\nname: common\nversion: 0.1.0\n")
+	write("lib/Chart.yaml", "apiVersion: v2\nname: lib\nversion: 0.1.0\ndependencies:\n  - name: common\n    version: 0.1.0\n    repository: file://../common\n")
+	write("app/Chart.yaml", "apiVersion: v2\nname: app\nversion: 0.1.0\ndependencies:\n  - name: lib\n    version: 0.1.0\n    repository: file://../lib\n")
+	write("app/Chart.lock", "dependencies:\n- name: lib\n  repository: file://../lib\n  version: 0.1.0\n")
+
+	_, err := Pack(filepath.Join(base, "app"))
+	assert.ErrorIs(t, err, ErrChartLockMissing, "lib has dependencies and no lock")
+	assert.Contains(t, err.Error(), "charts/lib")
+
+	write("lib/Chart.lock", "dependencies:\n- name: common\n  repository: file://../common\n  version: 0.1.0\n")
+	p, err := Pack(filepath.Join(base, "app"))
+	require.NoError(t, err)
+	files := entries(t, p.Bytes)
+	assert.Contains(t, files, "charts/lib/Chart.yaml")
+	assert.Contains(t, files, "charts/lib/charts/common/Chart.yaml", "lib's own dependency is vendored beneath it")
+	assert.Equal(t, []Vendored{
+		{Caller: ".", Source: "file://../lib/lib 0.1.0", Into: "charts/lib"},
+		{Caller: "charts/lib", Source: "file://../common/common 0.1.0", Into: "charts/lib/charts/common"},
+	}, p.Vendored)
+	assert.Equal(t, []Pin{
+		{Source: "file://../lib/lib", Constraint: "0.1.0", Resolved: "0.1.0"},
+		{Source: "file://../common/common", Constraint: "0.1.0", Resolved: "0.1.0"},
+	}, p.Pins)
+
+	// The server's walk sees the same thing.
+	n, err := Normalize(bytes.NewReader(p.Bytes))
+	require.NoError(t, err)
+	require.NoError(t, CloseChart(n.Files))
+
+	// An unpacked subchart the author left under charts/ is a chart too.
+	write("app2/Chart.yaml", "apiVersion: v2\nname: app2\nversion: 0.1.0\ndependencies:\n  - name: lib\n    version: 0.1.0\n    repository: file://../lib\n")
+	write("app2/Chart.lock", "dependencies:\n- name: lib\n  repository: file://../lib\n  version: 0.1.0\n")
+	write("app2/charts/lib/Chart.yaml", "apiVersion: v2\nname: lib\nversion: 0.1.0\ndependencies:\n  - name: common\n    version: 0.1.0\n    repository: https://charts.example.test\n")
+	_, err = Pack(filepath.Join(base, "app2"))
+	assert.ErrorIs(t, err, ErrChartLockMissing)
 }

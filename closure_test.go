@@ -99,3 +99,16 @@ func TestNormalizeStripsTerraformCaches(t *testing.T) {
 	}
 	assert.Equal(t, []string{".terraform.lock.hcl", "main.tf"}, paths, "the lock file stays; the caches do not")
 }
+
+func TestCloseChartLooksInsideUnpackedSubcharts(t *testing.T) {
+	files := []File{
+		{Path: "Chart.yaml", Data: []byte("apiVersion: v2\nname: app\ndependencies:\n  - name: lib\n    version: 0.1.0\n    repository: file://../lib\n")},
+		{Path: "charts/lib/Chart.yaml", Data: []byte("apiVersion: v2\nname: lib\ndependencies:\n  - name: common\n    version: 0.1.0\n    repository: https://charts.example.test\n")},
+	}
+	err := CloseChart(files)
+	assert.ErrorIs(t, err, ErrChartDependencyMissing)
+	assert.Contains(t, err.Error(), "charts/lib")
+
+	files = append(files, File{Path: "charts/lib/charts/common-0.1.0.tgz", Data: []byte("tgz")})
+	require.NoError(t, CloseChart(files))
+}

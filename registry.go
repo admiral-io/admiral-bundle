@@ -25,8 +25,8 @@ import (
 // source. Speaking the protocol directly is a few dozen lines; the
 // alternative, tofu's own registry client, is internal to tofu.
 
-// DefaultRegistryHost answers an address written without a host, the way the
-// runtime (OpenTofu, D17) would answer it.
+// DefaultRegistryHost answers an address written without a host, the way
+// OpenTofu would answer it.
 const DefaultRegistryHost = "registry.opentofu.org"
 
 var (
@@ -36,20 +36,27 @@ var (
 	ErrRegistryNotFound = errors.New("module not found in the registry")
 )
 
+// maxRegistryBody bounds one registry answer. A versions list for a module
+// with a long history runs to hundreds of kilobytes; nothing legitimate
+// nears this.
+const maxRegistryBody = 4 << 20
+
 // registryClient speaks the module registry protocol to any host.
 type registryClient struct {
-	client *http.Client
-	creds  Credentials
+	client   *http.Client
+	creds    Credentials
+	insecure bool
 	// services caches discovery per host: the absolute base URL of modules.v1.
 	services map[string]*url.URL
 	// versions caches the version list per package.
 	versions map[string][]*version.Version
 }
 
-func newRegistryClient(creds Credentials) *registryClient {
+func newRegistryClient(opts Options) *registryClient {
 	return &registryClient{
-		client:   &http.Client{Timeout: time.Minute},
-		creds:    creds,
+		client:   newHTTPClient(time.Minute, opts.Dial),
+		creds:    opts.Credentials,
+		insecure: opts.AllowInsecureHTTP,
 		services: map[string]*url.URL{},
 		versions: map[string][]*version.Version{},
 	}
@@ -99,7 +106,7 @@ func (r *registryClient) Versions(ctx context.Context, pkg tfaddr.ModulePackage)
 			} `json:"versions"`
 		} `json:"modules"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxRegistryBody)).Decode(&body); err != nil {
 		return nil, fmt.Errorf("%s: versions: %w", addr, err)
 	}
 	var vs []*version.Version
@@ -139,7 +146,7 @@ func (r *registryClient) Location(ctx context.Context, pkg tfaddr.ModulePackage,
 		var body struct {
 			Location string `json:"location"`
 		}
-		if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<16)).Decode(&body); err != nil {
+		if err := json.NewDecoder(io.LimitReader(resp.Body, maxRegistryBody)).Decode(&body); err != nil {
 			return "", fmt.Errorf("%s %s: download: %w", addr, v, err)
 		}
 		location = body.Location
@@ -177,7 +184,7 @@ func (r *registryClient) modulesBase(ctx context.Context, host string) (*url.URL
 		return nil, registryError(host, resp)
 	}
 	var services map[string]any
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<16)).Decode(&services); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxRegistryBody)).Decode(&services); err != nil {
 		return nil, fmt.Errorf("%s: service discovery: %w", host, err)
 	}
 	raw, _ := services["modules.v1"].(string)
@@ -189,6 +196,9 @@ func (r *registryClient) modulesBase(ctx context.Context, host string) (*url.URL
 		return nil, fmt.Errorf("%s: service discovery: modules.v1 %q: %w", host, raw, err)
 	}
 	base := disco.ResolveReference(rel)
+	if base.Scheme != "https" && !r.insecure {
+		return nil, fmt.Errorf("%w: %s says its modules service is at %s", ErrInsecureHTTP, host, base.Redacted())
+	}
 	if !strings.HasSuffix(base.Path, "/") {
 		base.Path += "/"
 	}
@@ -209,7 +219,7 @@ func (r *registryClient) get(ctx context.Context, host string, u *url.URL) (*htt
 		if err != nil {
 			return nil, err
 		}
-		if err := cred.authorize(req); err != nil {
+		if err := cred.authorize(req, r.insecure); err != nil {
 			return nil, err
 		}
 	}

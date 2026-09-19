@@ -1,19 +1,19 @@
-// Pack turns a directory into the gzipped tar `admiral component publish`
-// uploads, closing it on the way: every Terraform module the tree
-// calls from outside the root is brought into vendor/ and the call rewritten
-// to point there, recursively, until nothing points outside. A local path
-// that escapes the root is copied; a registry address, a git URL or an
-// archive is resolved and fetched (fetch.go), and what it resolved to is
-// recorded as a pin on the revision's provenance.
+package bundle
+
+// Pack turns a directory into the gzipped tar a registry stores, closing it
+// on the way: every Terraform module the tree calls from outside the root is
+// brought into vendor/ and the call rewritten to point there, recursively,
+// until nothing points outside. A local path that escapes the root is
+// copied; a registry address, a git URL or an archive is resolved and
+// fetched (fetch.go), and what it resolved to is recorded as a Pin.
 //
-// This is the client's half of the registry design's closure step. The
-// developer's machine is where the sources and the credentials are, so this
-// is where a tree can be closed; the server walks the uploaded bundle and
-// refuses anything still open.
+// This is the client's half of the closure step. The developer's machine is
+// where the sources and the credentials are, so this is where a tree can be
+// closed; the registry walks the uploaded bundle and refuses anything still
+// open.
 //
 // The working copy is never touched. Everything happens in a staging copy,
 // which is what gets packed.
-package bundle
 
 import (
 	"archive/tar"
@@ -41,8 +41,10 @@ import (
 const vendorDir = "vendor"
 
 var (
-	// ErrMissing is a local module source whose directory does not exist.
-	ErrMissing = errors.New("module source directory does not exist")
+	// ErrSourceDirMissing is a local module source, or a file:// chart
+	// dependency, whose directory does not exist on disk. ErrSourceMissing
+	// is the server's word for one absent from a bundle.
+	ErrSourceDirMissing = errors.New("source directory does not exist")
 )
 
 // Vendored is one escaping source the packer brought into the bundle.
@@ -59,9 +61,13 @@ type Vendored struct {
 
 // Packed is a bundle ready to upload.
 type Packed struct {
-	Kind     Kind
-	Bytes    []byte
-	Files    int
+	// Kind is what Detect said the component is.
+	Kind Kind
+	// Bytes is the gzipped tar.
+	Bytes []byte
+	// Files is how many regular files and symlinks the tar holds.
+	Files int
+	// Vendored is every outside source brought into the tree, in walk order.
 	Vendored []Vendored
 	// Pins is what the closure step resolved from a constraint to an exact
 	// version: a chart's dependencies today, a module's remote sources when
@@ -76,10 +82,28 @@ type Packed struct {
 // Options is what a Pack may be given: the credentials remote fetches
 // present, and the transport git sources are cloned with. Without a
 // transport a git source is refused; without credentials every fetch is
-// anonymous.
+// anonymous. The rest is what a server sets when the tree it packs was
+// written by someone else.
 type Options struct {
 	Credentials Credentials
 	Git         GitTransport
+	// Boundary is a directory that local sources and `file://` sources may
+	// not escape: a module call `../../..` or a chart dependency
+	// `file://../..` resolving outside it is refused rather than vendored.
+	// Empty means the host, which is right on a developer's own machine and
+	// wrong anywhere a tree someone else wrote is packed: a pull request, an
+	// upload. The repository top is the natural value.
+	Boundary string
+	// AllowInsecureHTTP lets a credential be presented over cleartext http.
+	// Off, a credential rides https or the fetch is refused; a redirect
+	// from https to http is refused either way.
+	AllowInsecureHTTP bool
+	// Dial replaces the dialer every HTTP fetch uses: the module registry,
+	// archives, chart repositories and OCI registries. DialPublic refuses
+	// loopback, private and link-local destinations after name resolution,
+	// which is what a server fetching on someone else's behalf wants. Git
+	// transports have their own network and are not covered.
+	Dial Dialer
 }
 
 // Pack stages, closes and packs the component at root, anonymously and
@@ -94,7 +118,11 @@ func PackContext(ctx context.Context, root string, opts Options) (*Packed, error
 	if err != nil {
 		return nil, err
 	}
-	if info, err := os.Stat(rootAbs); err != nil || !info.IsDir() {
+	info, err := os.Stat(rootAbs)
+	if err != nil {
+		return nil, err
+	}
+	if !info.IsDir() {
 		return nil, fmt.Errorf("%s is not a directory", root)
 	}
 
@@ -109,7 +137,7 @@ func PackContext(ctx context.Context, root string, opts Options) (*Packed, error
 	}
 	defer os.RemoveAll(stage)
 
-	if err := copyTree(rootAbs, stage, false); err != nil {
+	if err := copyTree(rootAbs, stage, rootAbs, false); err != nil {
 		return nil, fmt.Errorf("stage %s: %w", root, err)
 	}
 
@@ -125,14 +153,14 @@ func PackContext(ctx context.Context, root string, opts Options) (*Packed, error
 			return nil, err
 		}
 		defer os.RemoveAll(scratch)
-		f := newFetcher(scratch, opts.Credentials, opts.Git)
+		f := newFetcher(scratch, opts)
 		vendored, err = closeTerraform(ctx, rootAbs, stage, f)
 		if err != nil {
 			return nil, err
 		}
 		pins = f.pins
 	case KindHelm:
-		vendored, pins, version, err = closeHelm(ctx, rootAbs, stage, newHelmFetcher(opts.Credentials))
+		vendored, pins, version, err = closeHelm(ctx, rootAbs, stage, newHelmFetcher(opts))
 		if err != nil {
 			return nil, err
 		}
@@ -186,6 +214,9 @@ func DetectDir(root string) (Kind, error) {
 // tree also knows that tree, because its relative sources may only reach
 // within it.
 func closeTerraform(ctx context.Context, rootAbs, stage string, f *fetcher) ([]Vendored, error) {
+	if err := withinBoundary(f.boundary, rootAbs); err != nil {
+		return nil, err
+	}
 	type module struct {
 		abs, rel string
 		tree     *fetched
@@ -193,26 +224,44 @@ func closeTerraform(ctx context.Context, rootAbs, stage string, f *fetcher) ([]V
 	placed := map[string]string{rootAbs: "."} // abs -> bundle dir
 	used := map[string]bool{".": true}
 	queue := []module{{rootAbs, ".", nil}}
+	walked := map[string]bool{} // module dirs whose own calls have been read
 	var out []Vendored
 
-	// place records that a directory on disk now lives in the bundle,
-	// copying it there unless a placed ancestor already brought it along.
-	place := func(m module, source, targetAbs, targetRel string) error {
-		if _, ok := placedUnder(placed, targetAbs); ok {
-			placed[targetAbs] = targetRel
-			return nil
+	// place records that a directory on disk now lives in the bundle and
+	// returns where: under a placed ancestor that already brought it along,
+	// or at targetRel, copied there. Links inside the copy may resolve
+	// anywhere in boundary (the fetched tree, or the escaping directory
+	// itself) and nowhere else. Whatever computed targetRel, the copy lands
+	// inside the stage or not at all.
+	place := func(m module, source, targetAbs, targetRel, boundary string) (string, error) {
+		if rel, ok := placedUnder(placed, targetAbs); ok {
+			placed[targetAbs] = rel
+			return rel, nil
 		}
-		if err := copyTree(targetAbs, filepath.Join(stage, filepath.FromSlash(targetRel)), true); err != nil {
-			return fmt.Errorf("vendor %s: %w", source, err)
+		dst := filepath.Join(stage, filepath.FromSlash(targetRel))
+		if !inside(stage, dst) {
+			return "", fmt.Errorf("%w: %s at %q", ErrVendorEscapes, redactSource(source), targetRel)
+		}
+		if err := copyTree(targetAbs, dst, boundary, true); err != nil {
+			return "", fmt.Errorf("vendor %s: %w", redactSource(source), err)
 		}
 		placed[targetAbs] = targetRel
-		out = append(out, Vendored{Caller: m.rel, Source: source, Into: targetRel})
-		return nil
+		out = append(out, Vendored{Caller: m.rel, Source: redactSource(source), Into: targetRel})
+		return targetRel, nil
 	}
 
 	for len(queue) > 0 {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		m := queue[0]
 		queue = queue[1:]
+		// A module is read once, however many calls reach it; a cycle of
+		// local calls would otherwise never end.
+		if walked[m.abs] {
+			continue
+		}
+		walked[m.abs] = true
 
 		mod, diags := tfconfig.LoadModule(m.abs)
 		for _, d := range diags {
@@ -228,6 +277,7 @@ func closeTerraform(ctx context.Context, rootAbs, stage string, f *fetcher) ([]V
 			var (
 				targetAbs, targetRel string
 				tree                 = m.tree
+				err                  error
 			)
 			kind, _ := classify(call.Source)
 			switch kind {
@@ -239,7 +289,14 @@ func closeTerraform(ctx context.Context, rootAbs, stage string, f *fetcher) ([]V
 					return nil, fmt.Errorf("%w: %s has source %q", ErrFetchedEscapes, where, call.Source)
 				}
 				if info, err := os.Stat(targetAbs); err != nil || !info.IsDir() {
-					return nil, fmt.Errorf("%w: %s has source %q", ErrMissing, where, call.Source)
+					return nil, fmt.Errorf("%w: %s has source %q", ErrSourceDirMissing, where, call.Source)
+				}
+				// Lexically inside is not enough: a link on the way may
+				// point out of the tree.
+				if m.tree != nil {
+					if err := resolvesInside(m.tree.abs, targetAbs); err != nil {
+						return nil, fmt.Errorf("%w: %s has source %q", err, where, call.Source)
+					}
 				}
 				rel, known := placed[targetAbs]
 				switch {
@@ -248,7 +305,7 @@ func closeTerraform(ctx context.Context, rootAbs, stage string, f *fetcher) ([]V
 				case m.tree != nil:
 					r, _ := filepath.Rel(m.tree.abs, targetAbs)
 					targetRel = path.Join(m.tree.prefix, filepath.ToSlash(r))
-					if err := place(m, call.Source, targetAbs, targetRel); err != nil {
+					if targetRel, err = place(m, call.Source, targetAbs, targetRel, m.tree.abs); err != nil {
 						return nil, err
 					}
 				case inside(rootAbs, targetAbs):
@@ -256,8 +313,19 @@ func closeTerraform(ctx context.Context, rootAbs, stage string, f *fetcher) ([]V
 					targetRel = filepath.ToSlash(r)
 					placed[targetAbs] = targetRel
 				default:
-					targetRel = vendorPath(rootAbs, targetAbs, stage, used)
-					if err := place(m, call.Source, targetAbs, targetRel); err != nil {
+					// A local escape from the root reaches the host; the
+					// boundary, when set, says how far.
+					if err := withinBoundary(f.boundary, targetAbs); err != nil {
+						return nil, fmt.Errorf("%w: %s has source %q", err, where, call.Source)
+					}
+					// A vendor path is picked only when a placed ancestor
+					// has not already decided where this directory lives.
+					if rel, ok := placedUnder(placed, targetAbs); ok {
+						targetRel = rel
+					} else {
+						targetRel = vendorPath(rootAbs, targetAbs, stage, used)
+					}
+					if targetRel, err = place(m, call.Source, targetAbs, targetRel, targetAbs); err != nil {
 						return nil, err
 					}
 				}
@@ -266,8 +334,9 @@ func closeTerraform(ctx context.Context, rootAbs, stage string, f *fetcher) ([]V
 			case sourceUnsupported:
 				return nil, fmt.Errorf("%w: %s has source %q", ErrSourceUnsupported, where, call.Source)
 			default:
-				t, subdir, err := f.resolve(ctx, call)
-				if err != nil {
+				var t *fetched
+				var subdir string
+				if t, subdir, err = f.resolve(ctx, call); err != nil {
 					return nil, fmt.Errorf("%s: %w", where, err)
 				}
 				tree = t
@@ -275,12 +344,17 @@ func closeTerraform(ctx context.Context, rootAbs, stage string, f *fetcher) ([]V
 				if info, err := os.Stat(targetAbs); err != nil || !info.IsDir() {
 					return nil, fmt.Errorf("%w: %s has source %q (%s)", ErrSubdirMissing, where, call.Source, subdir)
 				}
+				// The subdir was cleaned before the fetch; what remains is a
+				// link on the way to it pointing out of the tree.
+				if err := resolvesInside(t.abs, targetAbs); err != nil {
+					return nil, fmt.Errorf("%w: %s has source %q (%s)", err, where, call.Source, subdir)
+				}
 				rel, known := placed[targetAbs]
 				if known {
 					targetRel = rel
 				} else {
 					targetRel = path.Join(t.prefix, subdir)
-					if err := place(m, call.Source, targetAbs, targetRel); err != nil {
+					if targetRel, err = place(m, call.Source, targetAbs, targetRel, t.abs); err != nil {
 						return nil, err
 					}
 				}
@@ -377,11 +451,17 @@ func stageFile(stage, rel, filename string) string {
 // preserving everything else byte for byte. hclwrite edits the syntax tree,
 // so comments, spacing and every other block stay as they were.
 func rewriteSource(file, moduleName, source string) error {
+	if strings.HasSuffix(file, ".json") {
+		// hclwrite edits native syntax only; a call in JSON has nowhere
+		// to be rewritten, and a rewritten file would no longer be what
+		// the author committed anyway.
+		return fmt.Errorf("%w: module %q in %s; JSON module calls are read but cannot be rewritten, declare it in HCL", ErrSourceUnsupported, moduleName, filepath.Base(file))
+	}
 	src, err := os.ReadFile(file)
 	if err != nil {
 		return err
 	}
-	f, diags := hclwrite.ParseConfig(src, file, hclPos())
+	f, diags := hclwrite.ParseConfig(src, file, hcl.InitialPos)
 	if diags.HasErrors() {
 		return fmt.Errorf("parse %s: %s", file, diags.Error())
 	}
@@ -399,9 +479,30 @@ func rewriteSource(file, moduleName, source string) error {
 	return os.WriteFile(file, f.Bytes(), 0o644)
 }
 
+// inside reports whether p is root or under it, lexically. Both must be
+// spelled from the same base; a link on the way is not seen, which is what
+// resolvesInside is for.
 func inside(root, p string) bool {
 	rel, err := filepath.Rel(root, p)
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// resolvesInside is inside after every link on both paths is followed: a
+// directory reached through `esc -> /` sits lexically inside the tree and
+// really does not.
+func resolvesInside(root, p string) error {
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return err
+	}
+	realP, err := filepath.EvalSymlinks(p)
+	if err != nil {
+		return err
+	}
+	if !inside(realRoot, realP) {
+		return ErrFetchedEscapes
+	}
+	return nil
 }
 
 // --- Files ------------------------------------------------------------------
@@ -411,45 +512,114 @@ func ignored(name string) bool {
 	return name == ".git" || name == ".terraform" || name == ".terragrunt-cache"
 }
 
-// copyTree copies src to dst, skipping ignored directories, keeping symlinks
-// as symlinks and the execute bit as the one mode bit that matters. A
-// vendored copy also drops `.terraform.lock.hcl`: tofu reads only the root's,
-// and an upstream re-running init would move the digest for no change in
-// what the module does.
-func copyTree(src, dst string, vendored bool) error {
-	return filepath.WalkDir(src, func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, _ := filepath.Rel(src, p)
-		if d.IsDir() && rel != "." && ignored(d.Name()) {
-			return filepath.SkipDir
-		}
-		if vendored && !d.IsDir() && d.Name() == ".terraform.lock.hcl" {
-			return nil
-		}
-		target := filepath.Join(dst, rel)
+// copyTree copies src to dst, skipping ignored directories and keeping the
+// execute bit as the one mode bit that matters. A symlink is not carried: one
+// whose target resolves inside boundary is replaced by a copy of the target,
+// one that resolves outside is refused, and a link to a directory already
+// being copied is a cycle and refused too. A vendored copy also drops
+// `.terraform.lock.hcl`: tofu reads only the root's, and an upstream
+// re-running init would move the digest for no change in what the module
+// does.
+func copyTree(src, dst, boundary string, vendored bool) error {
+	realBoundary, err := filepath.EvalSymlinks(boundary)
+	if err != nil {
+		return err
+	}
+	c := &copier{boundary: realBoundary, vendored: vendored, active: map[string]bool{}}
+	return c.dir(src, dst)
+}
+
+// copier is one copyTree in progress.
+type copier struct {
+	boundary string
+	vendored bool
+	// active is every real directory on the current path from the copy's
+	// root, so a link back up is caught before it recurses forever.
+	active map[string]bool
+}
+
+func (c *copier) dir(src, dst string) error {
+	realSrc, err := filepath.EvalSymlinks(src)
+	if err != nil {
+		return err
+	}
+	if !inside(c.boundary, realSrc) {
+		return fmt.Errorf("%w: %s -> %s", ErrLinkEscapes, src, realSrc)
+	}
+	if c.active[realSrc] {
+		return fmt.Errorf("symlink cycle: %s -> %s", src, realSrc)
+	}
+	c.active[realSrc] = true
+	defer delete(c.active, realSrc)
+
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		p := filepath.Join(src, e.Name())
+		target := filepath.Join(dst, e.Name())
 		switch {
-		case d.IsDir():
-			return os.MkdirAll(target, 0o755)
-		case d.Type()&fs.ModeSymlink != 0:
-			link, err := os.Readlink(p)
+		case e.IsDir():
+			if ignored(e.Name()) {
+				continue
+			}
+			if err := c.dir(p, target); err != nil {
+				return err
+			}
+		case e.Type()&fs.ModeSymlink != 0:
+			realTarget, err := filepath.EvalSymlinks(p)
+			if err != nil {
+				return fmt.Errorf("symlink %s: %w", p, err)
+			}
+			if !inside(c.boundary, realTarget) {
+				return fmt.Errorf("%w: %s -> %s", ErrLinkEscapes, p, realTarget)
+			}
+			info, err := os.Stat(realTarget)
 			if err != nil {
 				return err
 			}
-			return os.Symlink(link, target)
-		default:
-			info, err := d.Info()
+			switch {
+			case info.IsDir():
+				if ignored(e.Name()) {
+					continue
+				}
+				if err := c.dir(p, target); err != nil {
+					return err
+				}
+			case info.Mode().IsRegular():
+				if c.vendored && e.Name() == ".terraform.lock.hcl" {
+					continue
+				}
+				if err := copyFile(realTarget, target, fileMode(info)); err != nil {
+					return err
+				}
+			}
+		case e.Type().IsRegular():
+			if c.vendored && e.Name() == ".terraform.lock.hcl" {
+				continue
+			}
+			info, err := e.Info()
 			if err != nil {
 				return err
 			}
-			mode := os.FileMode(0o644)
-			if info.Mode()&0o111 != 0 {
-				mode = 0o755
+			if err := copyFile(p, target, fileMode(info)); err != nil {
+				return err
 			}
-			return copyFile(p, target, mode)
 		}
-	})
+	}
+	return nil
+}
+
+// fileMode keeps the execute bit and nothing else.
+func fileMode(info fs.FileInfo) os.FileMode {
+	if info.Mode()&0o111 != 0 {
+		return 0o755
+	}
+	return 0o644
 }
 
 func copyFile(src, dst string, mode os.FileMode) error {
@@ -500,37 +670,29 @@ func packTree(stage string) ([]byte, int, error) {
 	for _, p := range paths {
 		rel, _ := filepath.Rel(stage, p)
 		name := filepath.ToSlash(rel)
+		// The stage holds regular files only: copyTree resolved every link.
 		info, err := os.Lstat(p)
 		if err != nil {
 			return nil, 0, err
 		}
-		hdr := &tar.Header{Name: name, ModTime: time.Time{}, Format: tar.FormatPAX}
-		if info.Mode()&fs.ModeSymlink != 0 {
-			link, err := os.Readlink(p)
-			if err != nil {
-				return nil, 0, err
-			}
-			hdr.Typeflag = tar.TypeSymlink
-			hdr.Linkname = filepath.ToSlash(link)
-			hdr.Mode = 0o777
-		} else {
-			hdr.Typeflag = tar.TypeReg
-			hdr.Size = info.Size()
-			hdr.Mode = int64(info.Mode().Perm())
+		if !info.Mode().IsRegular() {
+			return nil, 0, fmt.Errorf("%w: %s", ErrEntryKind, name)
+		}
+		hdr := &tar.Header{
+			Name: name, ModTime: time.Time{}, Format: tar.FormatPAX,
+			Typeflag: tar.TypeReg, Size: info.Size(), Mode: int64(info.Mode().Perm()),
 		}
 		if err := tw.WriteHeader(hdr); err != nil {
 			return nil, 0, err
 		}
-		if hdr.Typeflag == tar.TypeReg {
-			f, err := os.Open(p)
-			if err != nil {
-				return nil, 0, err
-			}
-			_, err = io.Copy(tw, f)
-			f.Close()
-			if err != nil {
-				return nil, 0, err
-			}
+		f, err := os.Open(p)
+		if err != nil {
+			return nil, 0, err
+		}
+		_, err = io.Copy(tw, f)
+		f.Close()
+		if err != nil {
+			return nil, 0, err
 		}
 		count++
 	}
@@ -542,5 +704,3 @@ func packTree(stage string) ([]byte, int, error) {
 	}
 	return buf.Bytes(), count, nil
 }
-
-func hclPos() hcl.Pos { return hcl.Pos{Line: 1, Column: 1} }

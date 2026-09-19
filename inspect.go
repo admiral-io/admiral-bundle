@@ -12,8 +12,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Kind is what a bundle is. Mirrors the registry's Kind and the proto enum;
-// defined here so this package depends on neither.
+// Kind is what a bundle is.
 type Kind string
 
 const (
@@ -25,7 +24,7 @@ const (
 // ErrUnknownKind is a tree with no Chart.yaml, no .tf and no YAML at the root.
 var ErrUnknownKind = errors.New("cannot tell what kind of component this is: no Chart.yaml, .tf or YAML files at the root")
 
-// Severity ranks a finding. Same vocabulary as the proto.
+// Severity ranks a finding.
 type Severity string
 
 const (
@@ -36,9 +35,9 @@ const (
 	SeverityCritical Severity = "CRITICAL"
 )
 
-// Finding is one thing the publish gate noticed. Informational findings are
-// attached to the revision; an ERROR-level diagnostic from the walk refuses
-// the publish instead, through Inspect's error.
+// Finding is one thing the publish gate noticed and a registry may record
+// alongside the revision. A finding never refuses a publish on its own;
+// anything that must refuse comes back as Inspect's error.
 type Finding struct {
 	Severity Severity `json:"severity"`
 	Source   string   `json:"source"`
@@ -74,8 +73,11 @@ type Output struct {
 
 // Report is what Inspect learned.
 type Report struct {
-	Kind     Kind
+	// Kind is what the bundle is, detected or as passed in.
+	Kind Kind
+	// Contract is the inputs and outputs static inspection found.
 	Contract Contract
+	// Findings is what the publish gate has to say, in the order noticed.
 	Findings []Finding
 }
 
@@ -167,7 +169,7 @@ func inspectTerraform(files []File) (*Report, error) {
 			Output{Name: o.Name, Description: o.Description, Sensitive: o.Sensitive})
 	}
 
-	// D8: providers are the runner's concern, but a constraint that is missing
+	// Providers are the runner's concern, but a constraint that is missing
 	// or unbounded is worth a word at publish, because it is the difference
 	// between a plan that is reproducible next month and one that is not.
 	// terraform-config-inspect lists implied providers here too, with no
@@ -196,10 +198,9 @@ func inspectTerraform(files []File) (*Report, error) {
 	}
 
 	// required_version is the one fact about the runtime a bundle states
-	// about itself, and the registry is where a consumer reads it before
-	// binding an environment to a pool that cannot run it. Recorded when
-	// present; its absence gets the same nudge a missing provider
-	// constraint does.
+	// about itself, and a registry is where a consumer reads it before
+	// choosing a runtime that cannot run it. Recorded when present; its
+	// absence gets the same nudge a missing provider constraint does.
 	if len(mod.RequiredCore) > 0 {
 		report.Findings = append(report.Findings, Finding{
 			Severity: SeverityInfo, Source: "core-constraint", Code: "required",
@@ -212,9 +213,9 @@ func inspectTerraform(files []File) (*Report, error) {
 		})
 	}
 
-	// Section 7: a source that is not a literal is refused, because a closed
-	// bundle has no value-dependent graph by definition. terraform-config-
-	// inspect hands back the raw expression for a non-literal source.
+	// A source that is not a literal is refused, because a closed bundle has
+	// no value-dependent graph by definition. terraform-config-inspect hands
+	// back the raw expression for a non-literal source.
 	for _, name := range sortedKeys(mod.ModuleCalls) {
 		call := mod.ModuleCalls[name]
 		if isExpression(call.Source) {
@@ -228,9 +229,6 @@ func inspectTerraform(files []File) (*Report, error) {
 func mapFS(files []File) fstest.MapFS {
 	m := make(fstest.MapFS, len(files))
 	for _, f := range files {
-		if f.Link != "" {
-			continue // the walk reads .tf files; a link is not one
-		}
 		m[f.Path] = &fstest.MapFile{Data: f.Data, Mode: fs.FileMode(f.Mode)}
 	}
 	return m
@@ -299,10 +297,10 @@ func inspectHelm(files []File) (*Report, error) {
 		}
 	}
 
-	// Section 8: the images a chart declares are the SBOM seed, and cost a
-	// grep during inspection. Findings, not contract.
+	// The images a chart declares are worth recording, and cost a grep
+	// during inspection. Findings, not contract.
 	for _, f := range files {
-		if !strings.HasPrefix(f.Path, "templates/") || f.Link != "" {
+		if !strings.HasPrefix(f.Path, "templates/") {
 			continue
 		}
 		for _, line := range strings.Split(string(f.Data), "\n") {
@@ -320,7 +318,7 @@ func inspectHelm(files []File) (*Report, error) {
 
 func lookup(files []File, name string) ([]byte, bool) {
 	for _, f := range files {
-		if f.Path == name && f.Link == "" {
+		if f.Path == name {
 			return f.Data, true
 		}
 	}

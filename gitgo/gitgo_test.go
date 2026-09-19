@@ -85,3 +85,47 @@ func TestAuthFamilies(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "ssh key for github.com")
 }
+
+// recordingCredentials answers nothing and remembers what it was asked for.
+type recordingCredentials struct{ asked []string }
+
+func (r *recordingCredentials) Lookup(_ context.Context, rawURL string) (*bundle.Credential, error) {
+	r.asked = append(r.asked, rawURL)
+	return nil, nil
+}
+
+// A repository's submodules are fetched with a credential looked up for
+// each submodule's own URL. The credential the clone itself was handed is
+// never forwarded: a .gitmodules can name any host.
+func TestSubmodulesGetTheirOwnCredential(t *testing.T) {
+	base := t.TempDir()
+	sub := filepath.Join(base, "sub")
+	require.NoError(t, os.MkdirAll(sub, 0o755))
+	git(t, sub, "init", "-q", "-b", "main")
+	require.NoError(t, os.WriteFile(filepath.Join(sub, "main.tf"), []byte("# sub"), 0o644))
+	git(t, sub, "add", ".")
+	git(t, sub, "commit", "-q", "-m", "sub")
+
+	parent := filepath.Join(base, "parent")
+	require.NoError(t, os.MkdirAll(parent, 0o755))
+	git(t, parent, "init", "-q", "-b", "main")
+	require.NoError(t, os.WriteFile(filepath.Join(parent, "main.tf"), []byte(`module "s" { source = "./vendor/sub" }`), 0o644))
+	// A relative submodule URL, resolved against the parent's remote the
+	// way git does it; the parent's own remote is where it is cloned from.
+	git(t, parent, "-c", "protocol.file.allow=always", "submodule", "add", "-q", "../sub", "vendor/sub")
+	git(t, parent, "add", ".")
+	git(t, parent, "commit", "-q", "-m", "parent")
+
+	creds := &recordingCredentials{}
+	tr := &gitgo.Transport{Credentials: creds}
+	u, _ := url.Parse("file://" + parent)
+	dst := filepath.Join(t.TempDir(), "clone")
+	_, err := tr.Clone(context.Background(), u, "", dst, &bundle.Credential{Token: "parent-only"})
+	require.NoError(t, err)
+
+	b, err := os.ReadFile(filepath.Join(dst, "vendor", "sub", "main.tf"))
+	require.NoError(t, err, "the submodule is checked out")
+	assert.Equal(t, "# sub", string(b))
+	require.Len(t, creds.asked, 1, "one submodule, one lookup")
+	assert.Equal(t, "file://"+sub, creds.asked[0], "asked by the submodule's URL, not the parent's")
+}

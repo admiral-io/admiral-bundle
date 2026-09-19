@@ -3,6 +3,7 @@ package bundle
 import (
 	"context"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -65,24 +66,33 @@ func TestCredentialFamilies(t *testing.T) {
 	}
 
 	r := req()
-	require.NoError(t, (&Credential{Token: "tok"}).authorize(r))
+	require.NoError(t, (&Credential{Token: "tok"}).authorize(r, false))
 	assert.Equal(t, "Bearer tok", r.Header.Get("Authorization"))
 
 	r = req()
-	require.NoError(t, (&Credential{Basic: &BasicAuth{Username: "u", Password: "p"}}).authorize(r))
+	require.NoError(t, (&Credential{Basic: &BasicAuth{Username: "u", Password: "p"}}).authorize(r, false))
 	u, p, ok := r.BasicAuth()
 	assert.True(t, ok)
 	assert.Equal(t, []string{"u", "p"}, []string{u, p})
 
 	r = req()
-	require.NoError(t, (*Credential)(nil).authorize(r))
+	require.NoError(t, (*Credential)(nil).authorize(r, false))
 	assert.Empty(t, r.Header.Get("Authorization"))
 
-	assert.ErrorIs(t, (&Credential{SSHKey: &SSHKey{PEM: []byte("k")}}).authorize(req()), ErrCredentialFamily, "an ssh key has no HTTP form")
+	assert.ErrorIs(t, (&Credential{SSHKey: &SSHKey{PEM: []byte("k")}}).authorize(req(), false), ErrCredentialFamily, "an ssh key has no HTTP form")
+
+	// A credential rides https or nothing, unless the caller said cleartext
+	// is fine (a test fixture, a registry on localhost).
+	plain, _ := http.NewRequest(http.MethodGet, "http://example.test/x", nil)
+	assert.ErrorIs(t, (&Credential{Token: "tok"}).authorize(plain, false), ErrInsecureHTTP)
+	assert.Empty(t, plain.Header.Get("Authorization"))
+	require.NoError(t, (&Credential{Token: "tok"}).authorize(plain, true))
+	assert.Equal(t, "Bearer tok", plain.Header.Get("Authorization"))
+	require.NoError(t, (*Credential)(nil).authorize(plain, false), "anonymous http is not a credential")
 }
 
-// staticCredentials answers by the longest registered prefix, the way the
-// platform's registered credentials will.
+// staticCredentials answers by the longest registered prefix, the way a
+// server's registered credentials would.
 type staticCredentials map[string]*Credential
 
 func (s staticCredentials) Lookup(_ context.Context, rawURL string) (*Credential, error) {
@@ -96,4 +106,64 @@ func (s staticCredentials) Lookup(_ context.Context, rawURL string) (*Credential
 		return nil, nil
 	}
 	return s[best], nil
+}
+
+func TestNewAmbientCredentialsReadsTheProcess(t *testing.T) {
+	t.Setenv("TF_TOKEN_registry_example_test", "ambient")
+	c := NewAmbientCredentials()
+	cred, err := c.Lookup(context.Background(), "https://registry.example.test/")
+	require.NoError(t, err)
+	require.NotNil(t, cred)
+	assert.Equal(t, "ambient", cred.Token)
+}
+
+func TestHelmRepositoryMatchIgnoresCaseInSchemeAndHost(t *testing.T) {
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "repositories.yaml")
+	require.NoError(t, os.WriteFile(cfg, []byte("repositories:\n- name: acme\n  url: HTTPS://Charts.Example.Test/Stable/\n  username: u\n  password: p\n"), 0o644))
+	a := &AmbientCredentials{environ: []string{"HELM_REPOSITORY_CONFIG=" + cfg}, home: dir}
+
+	cred, err := a.Lookup(context.Background(), "https://charts.example.test/Stable/openfga-0.3.9.tgz")
+	require.NoError(t, err)
+	require.NotNil(t, cred, "host and scheme are case-insensitive")
+	assert.Equal(t, "u", cred.Basic.Username)
+
+	cred, err = a.Lookup(context.Background(), "https://charts.example.test/stable/openfga-0.3.9.tgz")
+	require.NoError(t, err)
+	assert.Nil(t, cred, "the path is not")
+}
+
+func TestCredentialsRideHTTPSOnly(t *testing.T) {
+	ctx := context.Background()
+	asked := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asked++
+		if r.Header.Get("Authorization") == "" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		_, _ = w.Write(tgz(t, "net", map[string]string{"main.tf": ""}))
+	}))
+	t.Cleanup(srv.Close)
+	creds := staticCredentials{srv.URL: {Token: "tok"}}
+	root := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(root, "main.tf"), []byte(`module "a" { source = "`+srv.URL+`/net.tgz" }`), 0o644))
+
+	_, err := PackContext(ctx, root, Options{Credentials: creds})
+	assert.ErrorIs(t, err, ErrInsecureHTTP, "an archive over http gets no credential")
+	assert.Equal(t, 0, asked, "refused before the request")
+
+	_, err = PackContext(ctx, root, Options{Credentials: creds, AllowInsecureHTTP: true})
+	require.NoError(t, err, "unless the caller allowed it")
+
+	// git over http with a credential is refused at the seam, before any
+	// transport runs.
+	require.NoError(t, os.WriteFile(filepath.Join(root, "main.tf"), []byte(`module "a" { source = "git::http://example.test/acme/x.git" }`), 0o644))
+	_, err = PackContext(ctx, root, Options{Credentials: staticCredentials{"http://example.test": {Token: "tok"}}, Git: testGit{}})
+	assert.ErrorIs(t, err, ErrInsecureHTTP)
+
+	// A chart repository over http, likewise.
+	dir := wrapperChart(t, srv.URL, "dependencies:\n- name: openfga\n  repository: "+srv.URL+"\n  version: 0.3.9\n")
+	_, err = PackContext(ctx, dir, Options{Credentials: creds})
+	assert.ErrorIs(t, err, ErrInsecureHTTP)
 }

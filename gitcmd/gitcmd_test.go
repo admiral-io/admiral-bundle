@@ -34,7 +34,7 @@ func write(t *testing.T, dir, name, data string) {
 
 // A root in a repository pins a sibling module at an older commit of the
 // same repository, by ssh URL to an origin nobody can reach. Nothing is
-// cloned: the object store has it (D29).
+// cloned: the object store has it.
 func TestSameRepositoryPin(t *testing.T) {
 	repo := t.TempDir()
 	git(t, repo, "init", "-q", "-b", "main")
@@ -59,7 +59,7 @@ func TestSameRepositoryPin(t *testing.T) {
 	require.NoError(t, err)
 	prefix := "vendor/github.com/acme/infra/" + first[:12]
 	assert.Equal(t, []bundle.Vendored{
-		{Caller: ".", Source: "git::ssh://git@github.com/acme/infra.git//modules/np?ref=" + first, Into: prefix + "/modules/np"},
+		{Caller: ".", Source: "git::ssh://git@github.com/acme/infra.git//modules/np", Into: prefix + "/modules/np"},
 		{Caller: prefix + "/modules/np", Source: "../metadata", Into: prefix + "/modules/metadata"},
 	}, p.Vendored)
 	assert.Equal(t, []bundle.Pin{{Source: "git::ssh://git@github.com/acme/infra.git", Constraint: first, Resolved: first}}, p.Pins)
@@ -107,4 +107,37 @@ func TestCredentialPresentation(t *testing.T) {
 	assert.Contains(t, err.Error(), "passphrase")
 	assert.Empty(t, os.Getenv("GIT_SSH_COMMAND"), "nothing leaks past a refusal")
 	assert.Empty(t, os.Getenv("GIT_CONFIG_COUNT"))
+}
+
+// A `?ref=` is text from a .tf file in the tree being published. One shaped
+// like a git option must never reach a command line: `git fetch origin
+// --upload-pack=<cmd>` runs <cmd>.
+func TestHostileRefIsRefused(t *testing.T) {
+	origin := t.TempDir()
+	git(t, origin, "init", "-q", "-b", "main")
+	write(t, origin, "main.tf", "")
+	git(t, origin, "add", ".")
+	git(t, origin, "commit", "-q", "-m", "init")
+	work := t.TempDir()
+	git(t, work, "init", "-q", "-b", "main")
+	git(t, work, "remote", "add", "origin", origin)
+
+	marker := filepath.Join(t.TempDir(), "pwned")
+	ref := "--upload-pack=touch " + marker
+	repo := &gitcmd.LocalRepo{Top: work, Key: "x"}
+	_, err := repo.Archive(context.Background(), ref, t.TempDir())
+	assert.ErrorIs(t, err, bundle.ErrRefInvalid)
+	assert.NoFileExists(t, marker)
+
+	u, _ := url.Parse("https://example.test/acme/x.git?ref=" + url.QueryEscape(ref))
+	_, err = (&gitcmd.Transport{}).Clone(context.Background(), u, ref, t.TempDir(), nil)
+	assert.ErrorIs(t, err, bundle.ErrRefInvalid)
+	assert.NoFileExists(t, marker)
+
+	// A ref that is not in the local checkout is fetched from origin by
+	// name, after the options end; the ordinary case still works.
+	sha := git(t, origin, "rev-parse", "HEAD")
+	got, err := repo.Archive(context.Background(), "main", t.TempDir())
+	require.NoError(t, err)
+	assert.Equal(t, sha, got)
 }
