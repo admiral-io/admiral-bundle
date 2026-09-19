@@ -104,9 +104,9 @@ func TestPackRefusesWhatItCannotClose(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(root, "main.tf"), []byte(data), 0o644))
 	}
 
-	write(`module "m" { source = "hashicorp/consul/aws" }`)
+	write(`module "m" { source = "s3::https://s3.amazonaws.com/bucket/mod.zip" }`)
 	_, err := Pack(root)
-	assert.ErrorIs(t, err, ErrRemoteSource)
+	assert.ErrorIs(t, err, ErrSourceUnsupported)
 
 	write(`module "m" { source = "../nope" }`)
 	_, err = Pack(root)
@@ -114,8 +114,7 @@ func TestPackRefusesWhatItCannotClose(t *testing.T) {
 
 	write(`variable "s" { type = string }` + "\n" + `module "m" { source = var.s }`)
 	_, err = Pack(root)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "non-literal")
+	assert.ErrorIs(t, err, ErrSourceNonLiteral)
 
 	require.NoError(t, os.Remove(filepath.Join(root, "main.tf")))
 	require.NoError(t, os.WriteFile(filepath.Join(root, "README.md"), []byte("x"), 0o644))

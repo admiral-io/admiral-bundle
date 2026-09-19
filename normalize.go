@@ -1,27 +1,18 @@
-// Package bundle is what happens to a component's bytes between a directory
-// on a developer's machine and a digest in the registry, with no database and
-// no object store in sight. It is one module, go.admiral.io/bundle, imported
-// by both halves of the publish path so that "closed" has exactly one
-// definition: the CLI (local mode, the developer's ambient credentials) and
-// admiral-platform (remote mode, credentials registered with Admiral).
+// Package bundle is the publish pipeline's pure half: what happens to bytes
+// between arrival and storage, with no database and no object store in sight
+// (docs/design/component-registry-and-publish-pipeline.md, sections 4, 7, 8).
 //
-// The client's half: Pack turns a directory into the gzipped tar `admiral
-// component publish` uploads, vendoring every local module source that
-// escapes the root into vendor/ and rewriting the call, recursively, until
-// nothing points outside. Describe records where the tree came from.
+// Normalize reads the gzipped tar a client sent and produces the canonical
+// form that is digested: `.git` stripped, entries sorted, ownership and
+// timestamps zeroed. Publishing the same tree twice yields the same digest,
+// which is what makes a repeat publish a no-op. Inspect reads the normalized
+// tree and says what it is (Terraform, Helm, manifests) and what it takes and
+// gives, and notices what the publish gate should say about it.
 //
-// The server's half: Normalize reads a gzipped tar and produces the canonical
-// form that is digested, `.git` and `.terraform` stripped, entries sorted,
-// ownership and timestamps zeroed, so publishing the same tree twice yields
-// the same digest. Inspect says what the tree is (Terraform, Helm, manifests),
-// what it takes and gives, and what the publish gate should say about it.
 // Close walks the module tree and refuses anything that is not inside the
-// bundle, classifying sources by the rule OpenTofu itself applies. No binary
-// is consulted anywhere in this package.
-//
-// Remote sources (registry addresses, git URLs, archives) are the next thing
-// this module learns: a fetcher in front of Close on both halves, resolving
-// each to an exact version, vendoring it, and recording the pin.
+// bundle. Vendoring itself happens where the sources can be reached: on the
+// developer's machine in local mode (the CLI), and on the server for remote
+// mode, which adds a fetcher in front of Close when it lands.
 package bundle
 
 import (
