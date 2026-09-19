@@ -22,6 +22,7 @@ const (
 	KindManifests Kind = "MANIFESTS"
 )
 
+// ErrUnknownKind is a tree with no Chart.yaml, no .tf and no YAML at the root.
 var ErrUnknownKind = errors.New("cannot tell what kind of component this is: no Chart.yaml, .tf or YAML files at the root")
 
 // Severity ranks a finding. Same vocabulary as the proto.

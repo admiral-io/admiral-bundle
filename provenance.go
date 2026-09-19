@@ -11,9 +11,13 @@ import (
 // an assertion the server records as such; the server decides the kind
 // (local, for anything the CLI uploads) on its own.
 type Provenance struct {
-	// URI is the origin remote, when there is one.
+	// URI is the origin remote, when there is one, or the OCI repository
+	// a pulled chart came from.
 	URI string
-	// Commit is HEAD.
+	// Ref is the tag a pulled chart was asked for; git provenance leaves it
+	// empty and says the commit.
+	Ref string
+	// Commit is HEAD, or the manifest digest of a pulled chart.
 	Commit string
 	// Path is the component's directory relative to the repository root.
 	Path string

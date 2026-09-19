@@ -1,16 +1,24 @@
-.PHONY: test # Run the tests.
-test:
-	go test -race -covermode=atomic ./...
+.DEFAULT_GOAL := help
 
-.PHONY: lint # Lint the code.
-lint:
+.PHONY: help
+help: ## Show this help.
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-14s %s\n", $$1, $$2}'
+
+.PHONY: test
+test: ## Run the tests.
+	go test -race ./...
+
+.PHONY: lint
+lint: ## Run golangci-lint.
 	./tools/golangci-lint.sh run --timeout 2m30s
 
-.PHONY: lint-fix # Lint and fix the code.
-lint-fix:
+.PHONY: lint-fix
+lint-fix: ## Run golangci-lint with --fix.
 	./tools/golangci-lint.sh run --fix
-	go mod tidy
 
-.PHONY: fmt # Format the code.
-fmt:
-	go fmt ./...
+.PHONY: fmt
+fmt: ## Format the code.
+	gofmt -w .
+
+.PHONY: verify
+verify: fmt lint test ## Format, lint and test.
