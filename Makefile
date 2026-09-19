@@ -23,13 +23,28 @@ fmt: ## Format the code.
 .PHONY: verify
 verify: fmt lint test ## Format, lint and test.
 
+.PHONY: fetch
+fetch: ## Fetch master and tags from origin.
+	@git fetch --quiet --tags origin master
+
+.PHONY: check-master
+check-master: fetch ## Ensure HEAD is master and matches origin/master.
+	@if [ "$$(git rev-parse --abbrev-ref HEAD)" != "master" ]; then \
+		echo "Releases are cut from master, not $$(git rev-parse --abbrev-ref HEAD)." >&2; \
+		exit 1; \
+	fi
+	@if [ "$$(git rev-parse HEAD)" != "$$(git rev-parse origin/master)" ]; then \
+		echo "Local master does not match origin/master. Pull (or push) before tagging." >&2; \
+		exit 1; \
+	fi
+
 .PHONY: version
-version: ## Show the current and next version.
+version: fetch ## Show the current and next version.
 	@echo "Current: $$(./tools/svu.sh current)"
 	@echo "Next:    $$(./tools/svu.sh next)"
 
 .PHONY: release
-release: ## Tag and push the next version (auto-detected from commits).
+release: check-master ## Tag and push the next version (auto-detected from commits).
 	@VERSION=$$(./tools/svu.sh next) && \
 	echo "Current version: $$(./tools/svu.sh current)" && \
 	echo "Next version:    $$VERSION" && \
@@ -38,19 +53,19 @@ release: ## Tag and push the next version (auto-detected from commits).
 	$(MAKE) --no-print-directory tag VERSION=$$VERSION
 
 .PHONY: release-patch
-release-patch: ## Tag and push a patch release.
+release-patch: check-master ## Tag and push a patch release.
 	@$(MAKE) --no-print-directory tag VERSION=$$(./tools/svu.sh patch)
 
 .PHONY: release-minor
-release-minor: ## Tag and push a minor release.
+release-minor: check-master ## Tag and push a minor release.
 	@$(MAKE) --no-print-directory tag VERSION=$$(./tools/svu.sh minor)
 
 .PHONY: release-major
-release-major: ## Tag and push a major release.
+release-major: check-master ## Tag and push a major release.
 	@$(MAKE) --no-print-directory tag VERSION=$$(./tools/svu.sh major)
 
 .PHONY: tag
-tag: ## Tag and push an explicit version. Usage: make tag VERSION=v1.2.3
+tag: check-master ## Tag and push an explicit version. Usage: make tag VERSION=v1.2.3
 	@if [ -z "$(VERSION)" ]; then \
 		echo "VERSION is required. Usage: make tag VERSION=v1.2.3" >&2; \
 		exit 1; \
