@@ -13,29 +13,24 @@ import (
 
 // The closure walk: is every module this bundle calls inside the bundle?
 //
-// Section 7 of the design. In local mode the CLI vendors local escapes and
-// remote sources on the developer's machine, where the filesystem and the
-// credentials are, and uploads a closed tree. The server cannot vendor what
-// it cannot reach, so its half of the job is to refuse, precisely, anything
-// that is not closed: a source that escapes the root, a remote address, a
-// local directory that is not there.
+// Pack vendors local escapes and remote sources where the filesystem and
+// the credentials are, and uploads a closed tree. A registry cannot vendor
+// what it cannot reach, so its half of the job is to refuse, precisely,
+// anything that is not closed: a source that escapes the root, a remote
+// address, a local directory that is not there.
 //
 // No binary is consulted. The walk reads module blocks through
 // terraform-config-inspect and classifies sources by the rule OpenTofu's own
 // addrs.ParseModuleSource applies: a source is local if and only if it begins
 // with `./` or `../`, and everything else is a registry or go-getter address
 // the runner would have to fetch. Two prefixes are not worth a dependency on
-// go-getter, and never worth a subprocess: `tofu get` was tried as a second
-// opinion and enforces required_version, which refused a module pinned above
-// the server's binary for the wrong reason.
-//
-// Remote-mode publishing, where the server fetches and vendors against
-// registered credentials, adds a fetcher in front of this walk. It does not
-// change what closed means.
+// go-getter, and never worth a subprocess: `tofu get` enforces
+// required_version, and would refuse a module pinned above the local binary
+// for the wrong reason.
 
 var (
 	// ErrSourceEscapes is a local source that resolves outside the bundle:
-	// `../modules/net` from the root. The CLI vendors these before upload.
+	// `../modules/net` from the root. Pack vendors these before upload.
 	ErrSourceEscapes = errors.New("module source escapes the bundle")
 	// ErrSourceRemote is a source the runner would have to fetch: a registry
 	// address, a git URL, an archive. It must be vendored into the bundle.
@@ -47,12 +42,14 @@ var (
 	ErrChartDependencyMissing = errors.New("chart dependency is not vendored under charts/")
 )
 
-// Call is one module call the walk found, for provenance and for the CLI's
-// benefit when it reports what it vendored.
+// Call is one module call the walk found, for provenance and for reporting
+// what was vendored.
 type Call struct {
 	// Caller is the directory of the module making the call; "." is the root.
 	Caller string
-	Name   string
+	// Name is the module block's label.
+	Name string
+	// Source is the source attribute as written.
 	Source string
 	// Dir is the bundle directory the source resolved to.
 	Dir string
@@ -61,8 +58,11 @@ type Call struct {
 // Closure is what the walk established: every module directory reachable
 // from the root, and every call between them.
 type Closure struct {
+	// Modules is every module directory reachable from the root, "." first,
+	// sorted.
 	Modules []string
-	Calls   []Call
+	// Calls is every module call between them, in walk order.
+	Calls []Call
 }
 
 // Close walks module calls from the root and refuses the first one that is
@@ -146,12 +146,24 @@ func displayDir(dir string) string {
 
 // CloseChart checks a Helm chart's declared dependencies are vendored. The
 // closure step for a chart is `helm dependency build`, which fills charts/;
-// a chart that skipped it would fetch at render time, which is what a closed
-// bundle exists to prevent.
+// a chart that skipped it would fail at render time, which is what a closed
+// bundle exists to prevent. A dependency unpacked as a directory under
+// charts/ is a chart in its own right and is checked the same way; a
+// packaged .tgz carries its own inside.
 func CloseChart(files []File) error {
-	data, ok := lookup(files, "Chart.yaml")
+	return closeChartAt(files, "")
+}
+
+// closeChartAt is CloseChart for the chart whose files sit under prefix
+// ("" for the root, "charts/x/" for a subchart).
+func closeChartAt(files []File, prefix string) error {
+	where := "helm"
+	if prefix != "" {
+		where = "helm: " + strings.TrimSuffix(prefix, "/")
+	}
+	data, ok := lookup(files, prefix+"Chart.yaml")
 	if !ok {
-		return errors.New("helm: Chart.yaml is missing")
+		return errors.New(where + ": Chart.yaml is missing")
 	}
 	var chart struct {
 		Dependencies []struct {
@@ -161,26 +173,34 @@ func CloseChart(files []File) error {
 		} `yaml:"dependencies"`
 	}
 	if err := yaml.Unmarshal(data, &chart); err != nil {
-		return fmt.Errorf("helm: Chart.yaml: %w", err)
+		return fmt.Errorf("%s: Chart.yaml: %w", where, err)
 	}
 	present := map[string]bool{}
+	var unpacked []string
 	for _, f := range files {
-		if !strings.HasPrefix(f.Path, "charts/") {
+		if !strings.HasPrefix(f.Path, prefix+"charts/") {
 			continue
 		}
-		rest := strings.TrimPrefix(f.Path, "charts/")
+		rest := strings.TrimPrefix(f.Path, prefix+"charts/")
 		// charts/<name>-<version>.tgz, or an unpacked charts/<name>/Chart.yaml.
 		if strings.HasSuffix(rest, ".tgz") && !strings.Contains(rest, "/") {
 			present[strings.TrimSuffix(rest, ".tgz")] = true
 		} else if strings.HasSuffix(rest, "/Chart.yaml") && strings.Count(rest, "/") == 1 {
-			present[strings.TrimSuffix(rest, "/Chart.yaml")] = true
+			name := strings.TrimSuffix(rest, "/Chart.yaml")
+			present[name] = true
+			unpacked = append(unpacked, name)
 		}
 	}
 	for _, dep := range chart.Dependencies {
 		if present[dep.Name] || present[dep.Name+"-"+dep.Version] {
 			continue
 		}
-		return fmt.Errorf("%w: %s %s from %s; run `helm dependency build` before publishing", ErrChartDependencyMissing, dep.Name, dep.Version, dep.Repository)
+		return fmt.Errorf("%w: %s: %s %s from %s; run `helm dependency build` before publishing", ErrChartDependencyMissing, where, dep.Name, dep.Version, dep.Repository)
+	}
+	for _, name := range unpacked {
+		if err := closeChartAt(files, prefix+"charts/"+name+"/"); err != nil {
+			return err
+		}
 	}
 	return nil
 }

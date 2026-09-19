@@ -1,8 +1,7 @@
 // Package gitcmd is the bundle's git transport over the git binary: what a
 // developer's machine has, with its agent, credential helpers and insteadOf
 // rules, and the checkout being published, which is read directly when a
-// source names it. It is the CLI's transport. The platform, whose image has
-// no git, uses gitgo.
+// source names it. An environment without git uses gitgo.
 package gitcmd
 
 import (
@@ -15,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	getter "github.com/hashicorp/go-getter/v2"
 
@@ -24,10 +24,11 @@ import (
 // Transport clones with go-getter's git getter, which runs `git`. When Repo
 // is set, a source naming that repository is read from its object store
 // instead of cloned: `git fetch origin <ref>` only when the object is
-// absent, then `git archive` (D29). That is what a root pinning its own
+// absent, then `git archive`. That is what a root pinning its own
 // sibling modules at a SHA looks like, and it needs no credential on a
 // laptop or under actions/checkout.
 type Transport struct {
+	// Repo is the checkout being published, or nil to clone every source.
 	Repo *LocalRepo
 	// Scratch is where a credential's key file lives for the length of a
 	// clone; the process temp directory when empty.
@@ -39,9 +40,16 @@ func (t *Transport) Clone(ctx context.Context, u *url.URL, ref, dst string, cred
 	if _, err := exec.LookPath("git"); err != nil {
 		return "", errors.New("git is not on the PATH; the CLI clones module sources with it")
 	}
+	if err := checkRef(ref); err != nil {
+		return "", err
+	}
 	if t.Repo != nil && t.Repo.Key == bundle.RepoKey(u) {
 		return t.Repo.Archive(ctx, ref, dst)
 	}
+	// The credential is presented through the process environment, which
+	// every clone in the process shares; one at a time.
+	envMu.Lock()
+	defer envMu.Unlock()
 	restore, err := t.env(u, cred)
 	if err != nil {
 		return "", err
@@ -60,13 +68,21 @@ func (t *Transport) Clone(ctx context.Context, u *url.URL, ref, dst string, cred
 	return strings.TrimSpace(string(out)), nil
 }
 
+// envMu serializes clones: the environment is process-wide, and two clones
+// at once could present one repository's credential to the other.
+var envMu sync.Mutex
+
+// credentialHelper answers git's credential protocol from the environment,
+// and only for the host the credential was issued to: a clone touches
+// exactly one remote, but a submodule or a redirect could name another.
+const credentialHelper = `!f() { h=; while read -r l; do case "$l" in host=*) h=${l#host=};; esac; done; [ "$h" = "$ADMIRAL_GIT_HOST" ] || exit 0; echo "username=$ADMIRAL_GIT_USERNAME"; echo "password=$ADMIRAL_GIT_PASSWORD"; }; f`
+
 // env presents a credential to the git go-getter runs, which inherits this
 // process's environment: an SSH key through GIT_SSH_COMMAND with the key in
 // a file only this process can read, basic auth or a token through a
 // credential helper that answers from the environment, never the command
 // line, never the URL. The returned function undoes it. A nil credential
-// leaves git to its own agent and helpers. Process environment is global, so
-// clones are sequential.
+// leaves git to its own agent and helpers.
 func (t *Transport) env(u *url.URL, cred *bundle.Credential) (func(), error) {
 	none := func() {}
 	if cred == nil {
@@ -105,7 +121,8 @@ func (t *Transport) env(u *url.URL, cred *bundle.Credential) (func(), error) {
 		return setenv(map[string]string{
 			"GIT_CONFIG_COUNT":     "1",
 			"GIT_CONFIG_KEY_0":     "credential.helper",
-			"GIT_CONFIG_VALUE_0":   `!f() { echo "username=$ADMIRAL_GIT_USERNAME"; echo "password=$ADMIRAL_GIT_PASSWORD"; }; f`,
+			"GIT_CONFIG_VALUE_0":   credentialHelper,
+			"ADMIRAL_GIT_HOST":     u.Host,
 			"ADMIRAL_GIT_USERNAME": cred.Basic.Username,
 			"ADMIRAL_GIT_PASSWORD": cred.Basic.Password,
 		}), nil
@@ -118,7 +135,9 @@ func (t *Transport) env(u *url.URL, cred *bundle.Credential) (func(), error) {
 		return setenv(map[string]string{
 			"GIT_CONFIG_COUNT":     "1",
 			"GIT_CONFIG_KEY_0":     "credential.helper",
-			"GIT_CONFIG_VALUE_0":   `!f() { echo "username=x-access-token"; echo "password=$ADMIRAL_GIT_PASSWORD"; }; f`,
+			"GIT_CONFIG_VALUE_0":   credentialHelper,
+			"ADMIRAL_GIT_HOST":     u.Host,
+			"ADMIRAL_GIT_USERNAME": "x-access-token",
 			"ADMIRAL_GIT_PASSWORD": cred.Token,
 		}), nil
 	default:
@@ -181,10 +200,25 @@ func DescribeRepo(ctx context.Context, dir string) *LocalRepo {
 	return &LocalRepo{Top: top, Key: key}
 }
 
+// checkRef refuses a ref git could read as an option. The ref comes from a
+// module source in the tree being published, which a pull request or a
+// vendored module can write; `--upload-pack=<cmd>` handed to `git fetch`
+// runs <cmd>. Every invocation below also ends its options before the ref,
+// so this is the readable half of a two-part guard.
+func checkRef(ref string) error {
+	if strings.HasPrefix(ref, "-") {
+		return fmt.Errorf("%w: %q", bundle.ErrRefInvalid, ref)
+	}
+	return nil
+}
+
 // Archive writes the tree at ref into dst from the local object store,
 // fetching the ref from origin only when the object is not already there,
 // and returns the commit it resolved to.
 func (r *LocalRepo) Archive(ctx context.Context, ref, dst string) (string, error) {
+	if err := checkRef(ref); err != nil {
+		return "", err
+	}
 	git := func(args ...string) (string, error) {
 		cmd := exec.CommandContext(ctx, "git", append([]string{"-C", r.Top}, args...)...)
 		var stderr bytes.Buffer
@@ -200,9 +234,9 @@ func (r *LocalRepo) Archive(ctx context.Context, ref, dst string) (string, error
 		// is origin's HEAD.
 		ref = "refs/remotes/origin/HEAD"
 	}
-	sha, err := git("rev-parse", "--verify", "--quiet", ref+"^{commit}")
+	sha, err := git("rev-parse", "--verify", "--quiet", "--end-of-options", ref+"^{commit}")
 	if err != nil {
-		if _, ferr := git("fetch", "--quiet", "origin", ref); ferr != nil {
+		if _, ferr := git("fetch", "--quiet", "origin", "--", ref); ferr != nil {
 			return "", fmt.Errorf("%s is not in the local checkout and could not be fetched from origin: %w", ref, ferr)
 		}
 		if sha, err = git("rev-parse", "--verify", "--quiet", "FETCH_HEAD^{commit}"); err != nil {
@@ -212,7 +246,7 @@ func (r *LocalRepo) Archive(ctx context.Context, ref, dst string) (string, error
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return "", err
 	}
-	cmd := exec.CommandContext(ctx, "git", "-C", r.Top, "archive", "--format=tar", sha)
+	cmd := exec.CommandContext(ctx, "git", "-C", r.Top, "archive", "--format=tar", "--end-of-options", sha)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.StdoutPipe()

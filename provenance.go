@@ -8,8 +8,8 @@ import (
 )
 
 // Provenance is what the working copy says about where it came from. It is
-// an assertion the server records as such; the server decides the kind
-// (local, for anything the CLI uploads) on its own.
+// an assertion, and a registry records it as one rather than a fact it
+// verified.
 type Provenance struct {
 	// URI is the origin remote, when there is one, or the OCI repository
 	// a pulled chart came from.
@@ -44,7 +44,9 @@ func Describe(ctx context.Context, dir string) Provenance {
 	if !ok {
 		return p
 	}
-	if abs, err := filepath.Abs(dir); err == nil {
+	// git reports the top with every link resolved; the directory must be
+	// spelled the same way or the two never meet.
+	if abs, err := filepath.EvalSymlinks(dir); err == nil {
 		if rel, err := filepath.Rel(top, abs); err == nil && rel != "." {
 			p.Path = filepath.ToSlash(rel)
 		}

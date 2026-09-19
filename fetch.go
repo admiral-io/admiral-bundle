@@ -22,20 +22,19 @@ import (
 	tfaddr "github.com/hashicorp/terraform-registry-address"
 )
 
-// Remote sources, the other half of closing a Terraform bundle (design
-// section 7). A module call names one of three things, told apart in the
-// order tofu's addrs.ParseModuleSource tells them apart: a local path
-// (`./` or `../`), a registry address (`GoogleCloudPlatform/cloud-armor/
-// google`, three or four slash-separated parts), or anything else, which
-// go-getter reads: `git::ssh://…?ref=`, `github.com/org/repo//sub`,
-// `https://host/x.zip`.
+// Remote sources, the other half of closing a Terraform bundle. A module
+// call names one of three things, told apart in the order tofu's
+// addrs.ParseModuleSource tells them apart: a local path (`./` or `../`), a
+// registry address (`GoogleCloudPlatform/cloud-armor/google`, three or four
+// slash-separated parts), or anything else, which go-getter reads:
+// `git::ssh://…?ref=`, `github.com/org/repo//sub`, `https://host/x.zip`.
 //
 // A registry address resolves constraint to version against the registry,
 // then the registry says where the bytes are, a go-getter address again. So
 // every remote source ends as one fetch into a scratch tree: an archive
 // downloaded here, a git repository cloned through a GitTransport.
 //
-// Fetched trees are placed in the bundle by identity (D30): the registry
+// Fetched trees are placed in the bundle by identity: the registry
 // address and version, the repository and commit, the archive URL and
 // digest. Two calls resolving to the same thing share one copy. What the
 // walk copies is the directory the call names and whatever that directory
@@ -43,9 +42,8 @@ import (
 // tree is refused.
 
 var (
-	// ErrSourceUnsupported is a source go-getter has a getter for but the
-	// CLI does not link: s3::, gcs::, hg::. Each is a separate module, added
-	// when a repository needs it.
+	// ErrSourceUnsupported is a source go-getter has a getter for but this
+	// package does not support: s3::, gcs::, hg::.
 	ErrSourceUnsupported = errors.New("module source scheme is not supported; vendor it into the tree before publishing")
 	// ErrSourceNonLiteral is a source read from a variable or a local.
 	ErrSourceNonLiteral = errors.New("module source is not a literal string; the registry needs sources it can read")
@@ -54,7 +52,22 @@ var (
 	ErrFetchedEscapes = errors.New("module source escapes the fetched tree")
 	// ErrSubdirMissing is a `//subdir` the fetched tree does not contain.
 	ErrSubdirMissing = errors.New("module subdirectory is not in the fetched tree")
+	// ErrVendorEscapes is a vendored path that would land outside the
+	// bundle's staging tree, whichever prefix computed it.
+	ErrVendorEscapes = errors.New("vendored path would land outside the bundle")
+	// ErrRefInvalid is a git ref that could be read as an option by git.
+	ErrRefInvalid = errors.New("git ref must not begin with a dash")
+	// ErrLinkEscapes is a symlink whose target resolves outside the tree
+	// being copied; a bundle carries a copy of what a link inside the tree
+	// points at, never the link, and never anything outside.
+	ErrLinkEscapes = errors.New("symlink resolves outside the tree")
+	// ErrTooManyEntries is an archive past the entry cap.
+	ErrTooManyEntries = errors.New("archive has too many entries")
 )
+
+// maxEntries bounds what one archive may unpack to, beside MaxUncompressed
+// for its bytes. Generous for a module tree, small against a bomb.
+const maxEntries = 1 << 17
 
 type sourceKind int
 
@@ -99,16 +112,15 @@ func forcedGetter(source string) (string, string) {
 }
 
 // GitTransport clones a repository. It is the one part of fetching that
-// differs by host: the CLI runs the developer's git binary (gitcmd), which
-// has their agent, helpers and insteadOf rules, and can read the checkout
-// being published; the platform clones in-process with go-git (gitgo),
-// because its image carries no git and a binary parsing hostile remote data
-// does not belong in the pod holding the tenant credential.
+// differs by host: gitcmd runs the machine's git binary, which has its
+// agent, helpers and insteadOf rules, and can read the checkout being
+// published; gitgo clones in-process with go-git, for an environment that
+// has no git binary.
 type GitTransport interface {
 	// Clone brings the repository at u, at ref (empty is the default branch),
 	// into dst, which does not exist yet, and returns the commit it is at.
 	// u still carries its query; a transport may honor go-getter's `depth`.
-	// cred is what the credential seam gave for u, or nil.
+	// cred is what the Credentials lookup gave for u, or nil.
 	Clone(ctx context.Context, u *url.URL, ref, dst string, cred *Credential) (string, error)
 }
 
@@ -123,6 +135,9 @@ type fetched struct {
 	prefix string
 	// pin is what resolving it recorded.
 	pin Pin
+	// locSubdir is the subdirectory the registry's download answer named,
+	// which every call into this tree is relative to.
+	locSubdir string
 }
 
 // fetcher resolves and fetches remote module sources for one Pack.
@@ -133,6 +148,8 @@ type fetcher struct {
 	http     *http.Client
 	creds    Credentials
 	git      GitTransport
+	insecure bool
+	boundary string
 	// trees dedups by identity: registry address+version, git URL+ref,
 	// archive URL. The key is known before the fetch.
 	trees map[string]*fetched
@@ -143,7 +160,7 @@ type fetcher struct {
 }
 
 // newFetcher makes a fetcher whose scratch lives under dir.
-func newFetcher(dir string, creds Credentials, git GitTransport) *fetcher {
+func newFetcher(dir string, opts Options) *fetcher {
 	httpGetter := &getter.HttpGetter{
 		Netrc:                 true,
 		XTerraformGetDisabled: true,
@@ -151,7 +168,7 @@ func newFetcher(dir string, creds Credentials, git GitTransport) *fetcher {
 	}
 	return &fetcher{
 		dir:      dir,
-		registry: newRegistryClient(creds),
+		registry: newRegistryClient(opts),
 		getter: &getter.Client{
 			Getters: []getter.Getter{
 				&getter.GitGetter{Detectors: []getter.Detector{
@@ -163,12 +180,16 @@ func newFetcher(dir string, creds Credentials, git GitTransport) *fetcher {
 				httpGetter,
 				new(getter.FileGetter),
 			},
-			Decompressors: getter.Decompressors,
+			// An archive is unpacked by go-getter's decompressors, bounded
+			// the way Untar is: so many entries, so many bytes per file.
+			Decompressors: getter.LimitedDecompressors(maxEntries, MaxUncompressed),
 		},
-		http:  &http.Client{Timeout: 5 * time.Minute},
-		creds: creds,
-		git:   git,
-		trees: map[string]*fetched{},
+		http:     newHTTPClient(5*time.Minute, opts.Dial),
+		creds:    opts.Credentials,
+		git:      opts.Git,
+		insecure: opts.AllowInsecureHTTP,
+		boundary: opts.Boundary,
+		trees:    map[string]*fetched{},
 	}
 }
 
@@ -202,7 +223,11 @@ func (f *fetcher) resolveRegistry(ctx context.Context, call *tfconfig.ModuleCall
 	}
 	key := "registry|" + registryAddress(pkg) + "|" + v.Original()
 	if t, ok := f.trees[key]; ok {
-		return t, addr.Subdir, nil
+		subdir, err := cleanSubdir(path.Join(t.locSubdir, addr.Subdir))
+		if err != nil {
+			return nil, "", fmt.Errorf("%s %s: %w", registryAddress(pkg), v, err)
+		}
+		return t, subdir, nil
 	}
 	location, err := f.registry.Location(ctx, pkg, v)
 	if err != nil {
@@ -211,29 +236,38 @@ func (f *fetcher) resolveRegistry(ctx context.Context, call *tfconfig.ModuleCall
 	// The registry's answer may itself carry a subdirectory: the package
 	// is the repository, the module is a directory in it.
 	location, locSubdir := getter.SourceDirSubdir(location)
-	abs, _, err := f.fetch(ctx, location)
+	abs, _, err := f.fetch(ctx, location, false)
 	if err != nil {
 		return nil, "", fmt.Errorf("%s %s: %w", registryAddress(pkg), v, err)
 	}
 	t := &fetched{
-		abs:    abs,
-		prefix: path.Join(vendorDir, registryHost(pkg), pkg.ForRegistryProtocol(), v.Original()),
-		pin:    Pin{Source: registryAddress(pkg), Constraint: call.Version, Resolved: v.Original()},
+		abs:       abs,
+		prefix:    path.Join(vendorDir, registryHost(pkg), pkg.ForRegistryProtocol(), v.Original()),
+		pin:       Pin{Source: registryAddress(pkg), Constraint: call.Version, Resolved: v.Original()},
+		locSubdir: locSubdir,
 	}
 	f.trees[key] = t
 	f.pins = append(f.pins, t.pin)
-	return t, path.Join(locSubdir, addr.Subdir), nil
+	subdir, err := cleanSubdir(path.Join(locSubdir, addr.Subdir))
+	if err != nil {
+		return nil, "", fmt.Errorf("%s %s: %w", registryAddress(pkg), v, err)
+	}
+	return t, subdir, nil
 }
 
 func (f *fetcher) resolveRemote(ctx context.Context, source string) (*fetched, string, error) {
 	base, subdir := getter.SourceDirSubdir(source)
+	subdir, err := cleanSubdir(subdir)
+	if err != nil {
+		return nil, "", fmt.Errorf("%s: %w", redactSource(source), err)
+	}
 	key := "remote|" + base
 	if t, ok := f.trees[key]; ok {
 		return t, subdir, nil
 	}
-	abs, t, err := f.fetch(ctx, base)
+	abs, t, err := f.fetch(ctx, base, true)
 	if err != nil {
-		return nil, "", fmt.Errorf("%s: %w", source, err)
+		return nil, "", fmt.Errorf("%s: %w", redactSource(source), err)
 	}
 	t.abs = abs
 	f.trees[key] = t
@@ -241,11 +275,60 @@ func (f *fetcher) resolveRemote(ctx context.Context, source string) (*fetched, s
 	return t, subdir, nil
 }
 
+// cleanSubdir validates a `//subdir`: a relative path that stays inside the
+// fetched tree. `..` is refused before anything is fetched, because a subdir
+// that climbs out of its tree is never something a tree could satisfy, and
+// on the way up it would reach the fetcher's scratch and the host.
+func cleanSubdir(subdir string) (string, error) {
+	if subdir == "" {
+		return "", nil
+	}
+	name, ok := cleanPath(subdir)
+	if !ok {
+		return "", fmt.Errorf("%w: subdirectory %q", ErrFetchedEscapes, subdir)
+	}
+	return name, nil
+}
+
+// ErrOutsideBoundary is a local or file:// source that resolves outside
+// Options.Boundary.
+var ErrOutsideBoundary = errors.New("source resolves outside the boundary")
+
+// withinBoundary refuses p when a boundary is set and p, with every link
+// followed, is not under it. A missing p is left for the caller to report.
+func withinBoundary(boundary, p string) error {
+	if boundary == "" {
+		return nil
+	}
+	realBoundary, err := filepath.EvalSymlinks(boundary)
+	if err != nil {
+		return fmt.Errorf("boundary %s: %w", boundary, err)
+	}
+	realP, err := filepath.EvalSymlinks(p)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	if !inside(realBoundary, realP) {
+		return fmt.Errorf("%w: %s is not under %s", ErrOutsideBoundary, p, boundary)
+	}
+	return nil
+}
+
+// ErrRegistryLocalLocation is a registry download answer naming a local
+// path, which a registry has no business doing.
+var ErrRegistryLocalLocation = errors.New("registry answered with a local path instead of a URL")
+
 // fetch brings one go-getter address (no subdirectory) into a fresh scratch
 // directory and says what it is: the tree root, and its bundle prefix and
 // pin. The address is detected first so `github.com/org/repo` and the
-// scp-like `git@host:org/repo` become the URLs they mean.
-func (f *fetcher) fetch(ctx context.Context, source string) (string, *fetched, error) {
+// scp-like `git@host:org/repo` become the URLs they mean. local says
+// whether a file source is acceptable: from the author's own call it is
+// (bounded by Options.Boundary); from a registry's download answer it is
+// not, because a registry names bytes on the network.
+func (f *fetcher) fetch(ctx context.Context, source string, local bool) (string, *fetched, error) {
 	// go-getter treats an existing destination as a clone to update, so
 	// the directory is named, not made.
 	f.n++
@@ -264,7 +347,7 @@ func (f *fetcher) fetch(ctx context.Context, source string) (string, *fetched, e
 		}
 	}
 	if matched == nil {
-		return "", nil, fmt.Errorf("%w: %s", ErrSourceUnsupported, source)
+		return "", nil, fmt.Errorf("%w: %s", ErrSourceUnsupported, redactSource(source))
 	}
 	// Detection may have rewritten the source (shorthand to URL) and may
 	// have found a subdirectory in the rewritten form; the caller split its
@@ -272,7 +355,7 @@ func (f *fetcher) fetch(ctx context.Context, source string) (string, *fetched, e
 	detected, _ := getter.SourceDirSubdir(req.Src)
 	u, err := url.Parse(detected)
 	if err != nil {
-		return "", nil, fmt.Errorf("%s: %w", source, err)
+		return "", nil, fmt.Errorf("%s: %w", redactSource(source), err)
 	}
 
 	switch matched.(type) {
@@ -283,13 +366,19 @@ func (f *fetcher) fetch(ctx context.Context, source string) (string, *fetched, e
 	default:
 		// file:// is a local directory; go-getter symlinks it unless told to
 		// copy, and a symlinked scratch tree is not ours to walk.
+		if !local {
+			return "", nil, fmt.Errorf("%w: %s", ErrRegistryLocalLocation, redactSource(source))
+		}
+		if err := withinBoundary(f.boundary, filepath.FromSlash(u.Path)); err != nil {
+			return "", nil, fmt.Errorf("%s: %w", redactSource(source), err)
+		}
 		req.Src, req.Copy = u.String(), true
 		if _, err := f.getter.Get(ctx, req); err != nil {
 			return "", nil, err
 		}
 		return dst, &fetched{
 			prefix: path.Join(vendorDir, "file", strings.TrimPrefix(filepath.ToSlash(filepath.Clean(u.Path)), "/")),
-			pin:    Pin{Source: source},
+			pin:    Pin{Source: redactSource(source)},
 		}, nil
 	}
 }
@@ -298,10 +387,15 @@ func (f *fetcher) fetch(ctx context.Context, source string) (string, *fetched, e
 // ref to the commit.
 func (f *fetcher) fetchGit(ctx context.Context, source string, u *url.URL, dst string) (string, *fetched, error) {
 	if f.git == nil {
-		return "", nil, fmt.Errorf("%w: %s", ErrNoGitTransport, source)
+		return "", nil, fmt.Errorf("%w: %s", ErrNoGitTransport, redactSource(source))
 	}
 	ref := u.Query().Get("ref")
-	written, _, _ := strings.Cut(source, "?")
+	written := redactSource(source)
+	// A ref is handed to a transport that may run git; one shaped like an
+	// option (`--upload-pack=…`) must never reach a command line.
+	if strings.HasPrefix(ref, "-") {
+		return "", nil, fmt.Errorf("%w: %q for %s", ErrRefInvalid, ref, written)
+	}
 	var cred *Credential
 	if f.creds != nil {
 		var err error
@@ -309,11 +403,14 @@ func (f *fetcher) fetchGit(ctx context.Context, source string, u *url.URL, dst s
 			return "", nil, err
 		}
 	}
+	if cred != nil && u.Scheme == "http" && !f.insecure {
+		return "", nil, fmt.Errorf("%w: %s to %s", ErrInsecureHTTP, cred.family(), written)
+	}
 	sha, err := f.git.Clone(ctx, u, ref, dst, cred)
 	if err != nil {
 		return "", nil, err
 	}
-	if len(sha) < 12 {
+	if !isCommitHash(sha) {
 		return "", nil, fmt.Errorf("git transport returned %q for %s, not a commit", sha, written)
 	}
 	return dst, &fetched{
@@ -321,6 +418,13 @@ func (f *fetcher) fetchGit(ctx context.Context, source string, u *url.URL, dst s
 		pin:    Pin{Source: written, Constraint: ref, Resolved: sha},
 	}, nil
 }
+
+var commitHash = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
+
+// isCommitHash is a full SHA-1 or SHA-256 object name, the only thing a
+// transport may answer with: a ref name or an error message would otherwise
+// be pinned as a commit.
+func isCommitHash(s string) bool { return commitHash.MatchString(s) }
 
 // fetchArchive downloads u, records its digest, and unpacks it by the
 // extension or the `archive=` parameter, with go-getter's decompressors.
@@ -342,7 +446,7 @@ func (f *fetcher) fetchArchive(ctx context.Context, source string, u *url.URL, d
 		if err != nil {
 			return "", nil, err
 		}
-		if err := cred.authorize(req); err != nil {
+		if err := cred.authorize(req, f.insecure); err != nil {
 			return "", nil, err
 		}
 	}
@@ -352,7 +456,7 @@ func (f *fetcher) fetchArchive(ctx context.Context, source string, u *url.URL, d
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "", nil, fmt.Errorf("GET %s: %s", u.Redacted(), resp.Status)
+		return "", nil, fmt.Errorf("GET %s: %s", redactURL(u), resp.Status)
 	}
 	archive, err := os.CreateTemp(f.dir, "archive-*")
 	if err != nil {
@@ -360,15 +464,21 @@ func (f *fetcher) fetchArchive(ctx context.Context, source string, u *url.URL, d
 	}
 	defer os.Remove(archive.Name())
 	h := sha256.New()
-	if _, err := io.Copy(io.MultiWriter(archive, h), resp.Body); err != nil {
+	// The archive is bounded by what it may expand to; a download past that
+	// cannot be a module either.
+	n, err := io.Copy(io.MultiWriter(archive, h), io.LimitReader(resp.Body, MaxUncompressed+1))
+	if err != nil {
 		return "", nil, errors.Join(err, archive.Close())
 	}
 	if err := archive.Close(); err != nil {
 		return "", nil, err
 	}
+	if n > MaxUncompressed {
+		return "", nil, fmt.Errorf("GET %s: %w", redactURL(u), ErrTooLarge)
+	}
 	digest := hex.EncodeToString(h.Sum(nil))
 	if checksum != "" && !checksumMatches(checksum, digest) {
-		return "", nil, fmt.Errorf("%s: checksum %q does not match the bytes (sha256:%s)", u.Redacted(), checksum, digest)
+		return "", nil, fmt.Errorf("%s: checksum %q does not match the bytes (sha256:%s)", redactURL(u), checksum, digest)
 	}
 
 	if format == "" {
@@ -380,10 +490,10 @@ func (f *fetcher) fetchArchive(ctx context.Context, source string, u *url.URL, d
 	}
 	d, ok := f.getter.Decompressors[format]
 	if !ok {
-		return "", nil, fmt.Errorf("%s: not an archive this can unpack (%q)", u.Redacted(), path.Base(u.Path))
+		return "", nil, fmt.Errorf("%s: not an archive this can unpack (%q)", redactURL(u), path.Base(u.Path))
 	}
 	if err := d.Decompress(dst, archive.Name(), true, 0); err != nil {
-		return "", nil, fmt.Errorf("unpack %s: %w", u.Redacted(), err)
+		return "", nil, fmt.Errorf("unpack %s: %w", redactURL(u), err)
 	}
 	// An archive that holds one top-level directory is that directory, the
 	// way a GitHub tarball is.
@@ -392,13 +502,16 @@ func (f *fetcher) fetchArchive(ctx context.Context, source string, u *url.URL, d
 		root = filepath.Join(dst, entries[0].Name())
 	}
 
-	name := strings.TrimPrefix(u.Path, "/")
+	// The prefix is a bundle path; a `..` in the URL's path must not become
+	// one in the bundle. place() refuses an escape too; this keeps the
+	// prefix readable.
+	name := strings.TrimPrefix(path.Clean("/"+u.Path), "/")
 	if format != "" {
 		name = strings.TrimSuffix(name, "."+format)
 	}
 	return root, &fetched{
 		prefix: path.Join(vendorDir, strings.ToLower(u.Hostname()), name, digest[:12]),
-		pin:    Pin{Source: stripForced(source), Constraint: checksum, Resolved: "sha256:" + digest},
+		pin:    Pin{Source: redactSource(stripForced(source)), Constraint: checksum, Resolved: "sha256:" + digest},
 	}, nil
 }
 
@@ -421,7 +534,7 @@ func stripForced(source string) string {
 // RepoKey names a repository without the ways of reaching it:
 // `github.com/org/repo` for ssh://git@github.com/org/repo.git, the scp-like
 // form, and https. Two sources naming one repository share a vendor prefix,
-// and the checkout being published is recognized by it (D29).
+// and the checkout being published is recognized by it.
 func RepoKey(u *url.URL) string {
 	host := strings.ToLower(u.Hostname())
 	p := strings.Trim(u.Path, "/")
@@ -452,9 +565,26 @@ func RepoKeyOf(remote string) string {
 }
 
 // Untar unpacks a tar stream of a source tree into dst: directories, files,
-// symlinks, nothing else. Entries that would leave dst are skipped.
+// symlinks, nothing else. Every entry is created through an *os.Root, so no
+// path component may traverse a symlink out of dst; a symlink whose target
+// resolves outside dst is refused, as is anything past MaxUncompressed bytes
+// or past the entry cap. The stream may come from a remote registry, so it
+// is read as hostile.
 func Untar(r io.Reader, dst string) error {
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		return err
+	}
+	root, err := os.OpenRoot(dst)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+
 	tr := tar.NewReader(r)
+	var (
+		total   int64
+		entries int
+	)
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
@@ -463,41 +593,66 @@ func Untar(r io.Reader, dst string) error {
 		if err != nil {
 			return err
 		}
-		name := filepath.Clean(filepath.FromSlash(hdr.Name))
-		if name == "." || strings.HasPrefix(name, "..") {
+		if entries++; entries > maxEntries {
+			return fmt.Errorf("%w: more than %d", ErrTooManyEntries, maxEntries)
+		}
+		name, ok := cleanPath(hdr.Name)
+		if !ok {
+			return fmt.Errorf("%w: %q", ErrBadPath, hdr.Name)
+		}
+		if name == "" {
 			continue
 		}
-		target := filepath.Join(dst, name)
+		target := filepath.FromSlash(name)
 		switch hdr.Typeflag {
 		case tar.TypeDir:
-			if err := os.MkdirAll(target, 0o755); err != nil {
+			if err := root.MkdirAll(target, 0o755); err != nil {
 				return err
 			}
 		case tar.TypeSymlink:
-			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			if !linkStaysInside(name, hdr.Linkname) {
+				return fmt.Errorf("%w: symlink %q -> %q escapes the tree", ErrBadPath, name, hdr.Linkname)
+			}
+			if err := root.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 				return err
 			}
-			if err := os.Symlink(hdr.Linkname, target); err != nil {
+			if err := root.Symlink(filepath.FromSlash(hdr.Linkname), target); err != nil {
 				return err
 			}
 		case tar.TypeReg:
+			if hdr.Size < 0 {
+				return fmt.Errorf("%w: %s has a negative size", ErrBadPath, name)
+			}
+			if total += hdr.Size; total > MaxUncompressed {
+				return ErrTooLarge
+			}
 			mode := os.FileMode(0o644)
 			if hdr.Mode&0o111 != 0 {
 				mode = 0o755
 			}
-			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			if err := root.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 				return err
 			}
-			out, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+			out, err := root.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
 			if err != nil {
 				return err
 			}
-			if _, err := io.Copy(out, tr); err != nil {
+			// The header's size is what was budgeted; a stream that carries
+			// more than it declared is malformed, not merely large.
+			n, err := io.Copy(out, io.LimitReader(tr, hdr.Size+1))
+			if err != nil {
 				return errors.Join(err, out.Close())
 			}
 			if err := out.Close(); err != nil {
 				return err
 			}
+			if n != hdr.Size {
+				return fmt.Errorf("%w: %s is not the size its header claims", ErrBadPath, name)
+			}
+		case tar.TypeXGlobalHeader, tar.TypeXHeader:
+			// git archive writes the commit id as a global header.
+		default:
+			return fmt.Errorf("%w: %q", ErrEntryKind, name)
 		}
 	}
 }

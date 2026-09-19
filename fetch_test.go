@@ -151,7 +151,7 @@ func TestRegistryClient(t *testing.T) {
 	for _, shape := range []string{"header", "body"} {
 		t.Run(shape, func(t *testing.T) {
 			fake := newFakeRegistry(t, []string{"1.0.0", "1.2.0", "1.1.0"}, "git::https://example.invalid/acme/net?ref=abc", shape)
-			r := newRegistryClient(staticCreds{"example.test": "tok"})
+			r := newRegistryClient(Options{Credentials: staticCreds{"example.test": "tok"}, AllowInsecureHTTP: true})
 			fake.seed(r)
 
 			m := mustParse(t, "example.test/acme/net/google")
@@ -172,7 +172,7 @@ func TestRegistryClient(t *testing.T) {
 
 	t.Run("relative location", func(t *testing.T) {
 		fake := newFakeRegistry(t, []string{"1.0.0"}, "/archives/net-1.0.0.tgz", "header")
-		r := newRegistryClient(nil)
+		r := newRegistryClient(Options{})
 		fake.seed(r)
 		m := mustParse(t, "example.test/acme/net/google")
 		loc, err := r.Location(ctx, m.Package, version.Must(version.NewVersion("1.0.0")))
@@ -257,7 +257,7 @@ func tgz(t *testing.T, top string, files map[string]string) []byte {
 func closeInStage(t *testing.T, root string, f *fetcher) (stage string, vendored []Vendored) {
 	t.Helper()
 	stage = t.TempDir()
-	require.NoError(t, copyTree(root, stage, false))
+	require.NoError(t, copyTree(root, stage, root, false))
 	vendored, err := closeTerraform(context.Background(), root, stage, f)
 	require.NoError(t, err)
 	return stage, vendored
@@ -296,7 +296,7 @@ func TestCloseRegistryModule(t *testing.T) {
 	}, "\n")), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(root, ".terraform.lock.hcl"), []byte("# root lock"), 0o644))
 
-	f := newFetcher(t.TempDir(), nil, testGit{})
+	f := newFetcher(t.TempDir(), Options{Git: testGit{}})
 	fake.seed(f.registry)
 	stage, vendored := closeInStage(t, root, f)
 
@@ -330,7 +330,7 @@ func TestCloseRegistrySubdirBringsWhatItReaches(t *testing.T) {
 	root := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(root, "main.tf"), []byte(`module "b" { source = "example.test/acme/net/google//modules/sub" }`), 0o644))
 
-	f := newFetcher(t.TempDir(), nil, testGit{})
+	f := newFetcher(t.TempDir(), Options{Git: testGit{}})
 	fake.seed(f.registry)
 	stage, vendored := closeInStage(t, root, f)
 
@@ -357,7 +357,7 @@ func TestCloseGitCloneAndDedup(t *testing.T) {
 		`module "b" { source = "` + src + `//modules/b" }`,
 	}, "\n")), 0o644))
 
-	f := newFetcher(t.TempDir(), nil, testGit{})
+	f := newFetcher(t.TempDir(), Options{Git: testGit{}})
 	stage, vendored := closeInStage(t, root, f)
 	prefix := "vendor/file" + filepath.ToSlash(upstream) + "/" + sha[:12]
 	assert.Equal(t, []Vendored{
@@ -377,15 +377,15 @@ func TestCloseFetchedTreeCannotEscape(t *testing.T) {
 		`module "a" { source = "git::file://`+upstream+`//modules/a?ref=`+sha+`" }`), 0o644))
 	require.NoError(t, os.MkdirAll(filepath.Join(filepath.Dir(upstream), "elsewhere"), 0o755))
 
-	f := newFetcher(t.TempDir(), nil, testGit{})
+	f := newFetcher(t.TempDir(), Options{Git: testGit{}})
 	stage := t.TempDir()
-	require.NoError(t, copyTree(root, stage, false))
+	require.NoError(t, copyTree(root, stage, root, false))
 	_, err := closeTerraform(context.Background(), root, stage, f)
 	assert.ErrorIs(t, err, ErrFetchedEscapes)
 
 	require.NoError(t, os.WriteFile(filepath.Join(root, "main.tf"), []byte(
 		`module "a" { source = "git::file://`+upstream+`//modules/nope?ref=`+sha+`" }`), 0o644))
-	_, err = closeTerraform(context.Background(), root, stage, newFetcher(t.TempDir(), nil, testGit{}))
+	_, err = closeTerraform(context.Background(), root, stage, newFetcher(t.TempDir(), Options{Git: testGit{}}))
 	assert.ErrorIs(t, err, ErrSubdirMissing)
 }
 
@@ -404,7 +404,7 @@ func TestCloseHTTPArchive(t *testing.T) {
 	src := srv.URL + "/archives/net-1.0.0.tgz"
 	require.NoError(t, os.WriteFile(filepath.Join(root, "main.tf"), []byte(`module "n" { source = "`+src+`" }`), 0o644))
 
-	f := newFetcher(t.TempDir(), nil, testGit{})
+	f := newFetcher(t.TempDir(), Options{Git: testGit{}})
 	stage, vendored := closeInStage(t, root, f)
 	require.Len(t, f.pins, 1)
 	pin := f.pins[0]
@@ -426,13 +426,13 @@ func TestCloseHTTPArchive(t *testing.T) {
 	t.Cleanup(authed.Close)
 	require.NoError(t, os.WriteFile(filepath.Join(root, "main.tf"), []byte(`module "n" { source = "`+authed.URL+`/net-1.0.0.tgz" }`), 0o644))
 	creds := staticCredentials{authed.URL: {Basic: &BasicAuth{Username: "u", Password: "p"}}}
-	_, _ = closeInStage(t, root, newFetcher(t.TempDir(), creds, testGit{}))
+	_, _ = closeInStage(t, root, newFetcher(t.TempDir(), Options{Credentials: creds, Git: testGit{}, AllowInsecureHTTP: true}))
 	assert.True(t, strings.HasPrefix(seen, "Basic "), seen)
 
 	// A wrong checksum refuses; a right one passes.
 	bad := src + "?checksum=sha256:" + strings.Repeat("0", 64)
 	require.NoError(t, os.WriteFile(filepath.Join(root, "main.tf"), []byte(`module "n" { source = "`+bad+`" }`), 0o644))
-	_, err := closeTerraform(context.Background(), root, t.TempDir(), newFetcher(t.TempDir(), nil, testGit{}))
+	_, err := closeTerraform(context.Background(), root, t.TempDir(), newFetcher(t.TempDir(), Options{Git: testGit{}}))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "checksum")
 }
@@ -442,4 +442,256 @@ func mustParse(t *testing.T, s string) tfaddr.Module {
 	kind, m := classify(s)
 	require.Equal(t, sourceRegistry, kind, s)
 	return m
+}
+
+// Service discovery, against a registry that speaks https the way a real
+// one must: the client trusts the test server's certificate for it.
+func TestRegistryDiscovery(t *testing.T) {
+	ctx := context.Background()
+	serve := func(t *testing.T, status int, body string) (*registryClient, string) {
+		t.Helper()
+		mux := http.NewServeMux()
+		mux.HandleFunc("/.well-known/terraform.json", func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(status)
+			_, _ = w.Write([]byte(body))
+		})
+		srv := httptest.NewTLSServer(mux)
+		t.Cleanup(srv.Close)
+		r := newRegistryClient(Options{})
+		r.client = srv.Client()
+		return r, srv.Listener.Addr().String()
+	}
+
+	r, host := serve(t, http.StatusOK, `{"modules.v1": "/v1/modules/"}`)
+	base, err := r.modulesBase(ctx, host)
+	require.NoError(t, err)
+	assert.Equal(t, "https://"+host+"/v1/modules/", base.String(), "relative to the discovery document")
+	_, err = r.modulesBase(ctx, host)
+	require.NoError(t, err, "cached")
+
+	r, host = serve(t, http.StatusOK, `{"modules.v1": "https://modules.example.test/api"}`)
+	base, err = r.modulesBase(ctx, host)
+	require.NoError(t, err)
+	assert.Equal(t, "https://modules.example.test/api/", base.String(), "absolute, with the trailing slash the protocol joins on")
+
+	r, host = serve(t, http.StatusOK, `{"modules.v1": "http://modules.example.test/api"}`)
+	_, err = r.modulesBase(ctx, host)
+	assert.ErrorIs(t, err, ErrInsecureHTTP, "a cleartext modules service is refused")
+
+	r, host = serve(t, http.StatusOK, `{"providers.v1": "/v1/providers/"}`)
+	_, err = r.modulesBase(ctx, host)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "does not host a module registry")
+
+	r, host = serve(t, http.StatusUnauthorized, ``)
+	_, err = r.modulesBase(ctx, host)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "TF_TOKEN_", "a refusal says how to present a token")
+
+	r, host = serve(t, http.StatusBadGateway, ``)
+	_, err = r.modulesBase(ctx, host)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "502")
+}
+
+func TestRegistryVersionsBodyIsBounded(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/modules/"+fakePkg+"/versions", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"modules":[{"versions":[`))
+		junk := []byte(`{"version":"1.0.0"},`)
+		for n := 0; n < maxRegistryBody+1; n += len(junk) {
+			_, _ = w.Write(junk)
+		}
+		_, _ = w.Write([]byte(`{"version":"1.0.0"}]}]}`))
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	r := newRegistryClient(Options{})
+	u, _ := url.Parse(srv.URL + "/api/modules/")
+	r.services[fakeHost] = u
+	_, err := r.Versions(context.Background(), mustParse(t, "example.test/acme/net/google").Package)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "versions")
+}
+
+// A registry's download answer names bytes on the network; a local path
+// from it is refused whether or not a boundary is set.
+func TestRegistryMayNotAnswerWithALocalPath(t *testing.T) {
+	local := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(local, "main.tf"), []byte(""), 0o644))
+	fake := newFakeRegistry(t, []string{"1.0.0"}, "file::"+local, "body")
+	root := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(root, "main.tf"), []byte(`module "b" { source = "example.test/acme/net/google" }`), 0o644))
+	f := newFetcher(t.TempDir(), Options{Git: testGit{}})
+	fake.seed(f.registry)
+	stage := t.TempDir()
+	require.NoError(t, copyTree(root, stage, root, false))
+	_, err := closeTerraform(context.Background(), root, stage, f)
+	assert.ErrorIs(t, err, ErrRegistryLocalLocation)
+}
+
+// --- What a fetch hands back is hostile until proven otherwise ------------
+
+// untar writes a raw tar (no gzip, the shape Untar reads) with entries in
+// the order given.
+func untar(t *testing.T, entries ...entry) *bytes.Reader {
+	t.Helper()
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	for _, e := range entries {
+		typ := e.typ
+		if typ == 0 {
+			typ = tar.TypeReg
+		}
+		hdr := &tar.Header{Name: e.name, Mode: 0o644, Typeflag: typ, Linkname: e.link, Size: int64(len(e.data))}
+		if typ != tar.TypeReg {
+			hdr.Size = 0
+		}
+		require.NoError(t, tw.WriteHeader(hdr))
+		if typ == tar.TypeReg {
+			_, err := tw.Write([]byte(e.data))
+			require.NoError(t, err)
+		}
+	}
+	require.NoError(t, tw.Close())
+	return bytes.NewReader(buf.Bytes())
+}
+
+// A symlink to somewhere outside, then a file through it: the classic.
+// Neither the link nor the file may land outside dst.
+func TestUntarDoesNotWriteThroughALink(t *testing.T) {
+	outside := t.TempDir()
+	dst := t.TempDir()
+	err := Untar(untar(t,
+		entry{name: "esc", typ: tar.TypeSymlink, link: outside},
+		entry{name: "esc/file", data: "pwn"},
+	), dst)
+	assert.ErrorIs(t, err, ErrBadPath)
+	assert.NoFileExists(t, filepath.Join(outside, "file"))
+
+	// A relative link that climbs out is the same thing spelled differently.
+	err = Untar(untar(t,
+		entry{name: "a/esc", typ: tar.TypeSymlink, link: "../../" + filepath.Base(outside)},
+		entry{name: "a/esc/file", data: "pwn"},
+	), t.TempDir())
+	assert.ErrorIs(t, err, ErrBadPath)
+	assert.NoFileExists(t, filepath.Join(outside, "file"))
+
+	// Even a link that passes the lexical check cannot be traversed by a
+	// later entry: os.Root refuses the path component.
+	dst = t.TempDir()
+	err = Untar(untar(t,
+		entry{name: "a/link", typ: tar.TypeSymlink, link: "../b"},
+		entry{name: "b/ok", data: "1"},
+		entry{name: "a/link/through", data: "2"},
+	), dst)
+	require.NoError(t, err, "a link inside the tree is fine")
+	assert.FileExists(t, filepath.Join(dst, "b", "through"), "resolved inside the root, so it is inside")
+	assert.NoFileExists(t, filepath.Join(filepath.Dir(dst), "b"))
+}
+
+func TestUntarRefusesEscapingNamesAndKeepsOddOnes(t *testing.T) {
+	dst := t.TempDir()
+	require.NoError(t, Untar(untar(t, entry{name: "..foo", data: "x"}, entry{name: "./a/./b", data: "y"}), dst))
+	assert.FileExists(t, filepath.Join(dst, "..foo"), "a name that merely starts with dots is a name")
+	assert.FileExists(t, filepath.Join(dst, "a", "b"))
+
+	for _, name := range []string{"../x", "a/../../x", "/etc/x"} {
+		err := Untar(untar(t, entry{name: name, data: "x"}), t.TempDir())
+		assert.ErrorIs(t, err, ErrBadPath, name)
+	}
+	err := Untar(untar(t, entry{name: "dev", typ: tar.TypeChar}), t.TempDir())
+	assert.ErrorIs(t, err, ErrEntryKind)
+}
+
+func TestUntarIsBounded(t *testing.T) {
+	// A header may claim any size; the budget is checked before a byte is
+	// read, so a bomb costs nothing.
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	require.NoError(t, tw.WriteHeader(&tar.Header{Name: "big", Typeflag: tar.TypeReg, Mode: 0o644, Size: MaxUncompressed + 1}))
+	err := Untar(bytes.NewReader(buf.Bytes()), t.TempDir())
+	assert.ErrorIs(t, err, ErrTooLarge)
+
+	buf.Reset()
+	tw = tar.NewWriter(&buf)
+	for i := 0; i <= maxEntries; i++ {
+		require.NoError(t, tw.WriteHeader(&tar.Header{Name: "d/" + strings.Repeat("x", 3) + string(rune('a'+i%26)), Typeflag: tar.TypeDir, Mode: 0o755}))
+	}
+	require.NoError(t, tw.Close())
+	err = Untar(bytes.NewReader(buf.Bytes()), t.TempDir())
+	assert.ErrorIs(t, err, ErrTooManyEntries)
+}
+
+// `//subdir` may only name a directory inside the fetched tree. `..` is
+// refused before the fetch, whoever wrote it: the call, or the registry's
+// download answer.
+func TestPackRefusesASubdirThatClimbs(t *testing.T) {
+	src := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(src, "main.tf"), []byte(""), 0o644))
+	for _, subdir := range []string{"..", "../..", "a/../..", "/etc"} {
+		root := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(root, "main.tf"), []byte(`module "x" { source = "file::`+src+`//`+subdir+`" }`), 0o644))
+		_, err := PackContext(context.Background(), root, Options{})
+		assert.ErrorIs(t, err, ErrFetchedEscapes, subdir)
+	}
+
+	// The registry's answer carries its own subdirectory; it gets the same
+	// treatment as one the author wrote.
+	upstream, sha := gitRepo(t, map[string]string{"main.tf": `# root`})
+	fake := newFakeRegistry(t, []string{"1.0.0"}, "git::file://"+upstream+"//..?ref="+sha, "body")
+	root := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(root, "main.tf"), []byte(`module "b" { source = "example.test/acme/net/google" }`), 0o644))
+	f := newFetcher(t.TempDir(), Options{Git: testGit{}})
+	fake.seed(f.registry)
+	stage := t.TempDir()
+	require.NoError(t, copyTree(root, stage, root, false))
+	_, err := closeTerraform(context.Background(), root, stage, f)
+	assert.ErrorIs(t, err, ErrFetchedEscapes)
+}
+
+// A ref reaches a transport that may run git; one shaped like an option
+// stops at the source, before any transport sees it.
+func TestPackRefusesARefShapedLikeAnOption(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(root, "main.tf"), []byte(
+		`module "a" { source = "git::https://example.test/acme/x.git?ref=--upload-pack=touch%20pwned" }`), 0o644))
+	_, err := PackContext(context.Background(), root, Options{Git: testGit{}})
+	assert.ErrorIs(t, err, ErrRefInvalid)
+}
+
+// shortGit is a transport that answers with something that is not a commit.
+type shortGit struct{ answer string }
+
+func (g shortGit) Clone(_ context.Context, _ *url.URL, _, dst string, _ *Credential) (string, error) {
+	return g.answer, os.MkdirAll(dst, 0o755)
+}
+
+func TestFetchGitRequiresAFullCommitHash(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(root, "main.tf"), []byte(`module "a" { source = "git::https://example.test/acme/x.git" }`), 0o644))
+	for _, bad := range []string{"main", "abc123def456", "error: not found", "ABCDEF0123456789ABCDEF0123456789ABCDEF01"} {
+		_, err := PackContext(context.Background(), root, Options{Git: shortGit{bad}})
+		require.Error(t, err, bad)
+		assert.Contains(t, err.Error(), "not a commit", bad)
+	}
+	assert.True(t, isCommitHash("0123456789abcdef0123456789abcdef01234567"))
+	assert.True(t, isCommitHash("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"))
+}
+
+func TestArchiveDownloadIsBounded(t *testing.T) {
+	// A server that never stops talking: the download stops at the cap.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		chunk := bytes.Repeat([]byte("x"), 1<<20)
+		for i := 0; i < int(MaxUncompressed>>20)+2; i++ {
+			if _, err := w.Write(chunk); err != nil {
+				return
+			}
+		}
+	}))
+	t.Cleanup(srv.Close)
+	root := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(root, "main.tf"), []byte(`module "a" { source = "`+srv.URL+`/net.tgz" }`), 0o644))
+	_, err := Pack(root)
+	assert.ErrorIs(t, err, ErrTooLarge)
 }

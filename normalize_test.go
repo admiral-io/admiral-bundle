@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"fmt"
 	"testing"
 	"time"
 
@@ -87,15 +88,91 @@ func TestNormalizeIsAFunctionOfTheTreeAlone(t *testing.T) {
 	assert.Equal(t, na.Bytes, again.Bytes, "normalization is idempotent")
 }
 
-func TestNormalizeKeepsTheExecuteBitAndSymlinks(t *testing.T) {
+func TestNormalizeKeepsTheExecuteBit(t *testing.T) {
 	n, err := Normalize(bytes.NewReader(targz(t,
 		entry{name: "run.sh", data: "#!/bin/sh", mode: 0o700},
-		entry{name: "link", link: "run.sh", typ: tar.TypeSymlink},
+		entry{name: "main.tf", data: "", mode: 0o600},
 	)))
 	require.NoError(t, err)
 	require.Len(t, n.Files, 2)
+	assert.EqualValues(t, 0o644, n.Files[0].Mode)
 	assert.EqualValues(t, 0o755, n.Files[1].Mode)
-	assert.Equal(t, "run.sh", n.Files[0].Link)
+}
+
+// The same rule Pack applies on the client, applied to what arrives: a link
+// inside the tree is a copy of its target, whatever produced the archive.
+func TestNormalizeResolvesLinksIntoCopies(t *testing.T) {
+	n, err := Normalize(bytes.NewReader(targz(t,
+		// The link comes before its target in the stream.
+		entry{name: "link.sh", link: "run.sh", typ: tar.TypeSymlink},
+		entry{name: "run.sh", data: "#!/bin/sh", mode: 0o700},
+		entry{name: "main.tf", data: `module "net" { source = "./modules/net" }`},
+		entry{name: "shared/net/main.tf", data: `variable "cidr" {}`},
+		entry{name: "shared/net/versions.tf", link: "../../versions.tf", typ: tar.TypeSymlink},
+		entry{name: "versions.tf", data: "terraform {}"},
+		entry{name: "modules/net", link: "../shared/net", typ: tar.TypeSymlink},
+		// A link through a link: the directory link on the way is followed.
+		entry{name: "modules/alias.tf", link: "net/main.tf", typ: tar.TypeSymlink},
+	)))
+	require.NoError(t, err)
+	got := map[string]File{}
+	for _, f := range n.Files {
+		got[f.Path] = f
+	}
+	assert.Equal(t, "#!/bin/sh", string(got["link.sh"].Data))
+	assert.EqualValues(t, 0o755, got["link.sh"].Mode, "the copy takes the target's mode")
+	assert.Equal(t, `variable "cidr" {}`, string(got["modules/net/main.tf"].Data))
+	assert.Equal(t, "terraform {}", string(got["modules/net/versions.tf"].Data), "a link inside a linked directory")
+	assert.Equal(t, `variable "cidr" {}`, string(got["modules/alias.tf"].Data))
+	assert.Len(t, n.Files, 9)
+
+	// The output has no link entries.
+	gz, err := gzip.NewReader(bytes.NewReader(n.Bytes))
+	require.NoError(t, err)
+	tr := tar.NewReader(gz)
+	for {
+		hdr, err := tr.Next()
+		if err != nil {
+			break
+		}
+		assert.Equal(t, byte(tar.TypeReg), hdr.Typeflag, hdr.Name)
+	}
+
+	// And Close reads the copy as the module it is.
+	c, err := Close(n.Files)
+	require.NoError(t, err)
+	assert.Equal(t, []string{".", "modules/net"}, c.Modules)
+}
+
+// Copies share bytes, so a link bomb costs entries, not memory; the entry
+// cap is what stops it.
+func TestNormalizeBoundsLinkExpansion(t *testing.T) {
+	// 2^18 empty files from 18 directory links, each doubling the last.
+	es := []entry{{name: "d0/x", data: ""}, {name: "d0/y", data: ""}}
+	for i := 1; i <= 17; i++ {
+		es = append(es,
+			entry{name: fmt.Sprintf("d%d/a", i), link: fmt.Sprintf("../d%d", i-1), typ: tar.TypeSymlink},
+			entry{name: fmt.Sprintf("d%d/b", i), link: fmt.Sprintf("../d%d", i-1), typ: tar.TypeSymlink},
+		)
+	}
+	_, err := Normalize(bytes.NewReader(targz(t, es...)))
+	assert.ErrorIs(t, err, ErrTooManyEntries)
+}
+
+func TestNormalizeRefusesLinksItCannotResolve(t *testing.T) {
+	for name, entries := range map[string][]entry{
+		"dangling":    {{name: "main.tf", data: ""}, {name: "l", link: "gone", typ: tar.TypeSymlink}},
+		"self":        {{name: "main.tf", data: ""}, {name: "l", link: "l", typ: tar.TypeSymlink}},
+		"pair":        {{name: "main.tf", data: ""}, {name: "a", link: "b", typ: tar.TypeSymlink}, {name: "b", link: "a", typ: tar.TypeSymlink}},
+		"up-own-path": {{name: "main.tf", data: ""}, {name: "d/l", link: "..", typ: tar.TypeSymlink}},
+		"to-root":     {{name: "main.tf", data: ""}, {name: "l", link: ".", typ: tar.TypeSymlink}},
+		"file-twice":  {{name: "d/x", data: ""}, {name: "l", link: "d", typ: tar.TypeSymlink}, {name: "l/x", data: ""}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := Normalize(bytes.NewReader(targz(t, entries...)))
+			assert.ErrorIs(t, err, ErrBadPath)
+		})
+	}
 }
 
 func TestNormalizeRefusesWhatEscapesTheRoot(t *testing.T) {
@@ -235,4 +312,54 @@ func TestInspectHelm(t *testing.T) {
 
 	_, err = Inspect([]File{{Path: "Chart.yaml", Data: []byte("version: 1\n")}}, "")
 	assert.Error(t, err, "a chart without a name")
+}
+
+// A tar whose links to directories multiply what is under them is stopped
+// by entries as it expands, not only by bytes after.
+func TestNormalizeStopsLinkExpansionEarly(t *testing.T) {
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	add := func(name string, typ byte, link string, data string) {
+		hdr := &tar.Header{Name: name, Typeflag: typ, Linkname: link, Mode: 0o644, Size: int64(len(data))}
+		require.NoError(t, tw.WriteHeader(hdr))
+		if typ == tar.TypeReg {
+			_, _ = tw.Write([]byte(data))
+		}
+	}
+	// d0 holds 64 files; d1 holds 64 links to d0; d2 holds 64 links to d1;
+	// d3 holds 64 links to d2: 64^4 entries once resolved.
+	for i := 0; i < 64; i++ {
+		add(fmt.Sprintf("d0/f%d", i), tar.TypeReg, "", "x")
+	}
+	for level := 1; level <= 3; level++ {
+		for i := 0; i < 64; i++ {
+			add(fmt.Sprintf("d%d/l%d", level, i), tar.TypeSymlink, fmt.Sprintf("../d%d", level-1), "")
+		}
+	}
+	require.NoError(t, tw.Close())
+	require.NoError(t, gz.Close())
+	assert.Less(t, buf.Len(), 1<<16, "small on the wire")
+
+	done := make(chan error, 1)
+	go func() { _, err := Normalize(bytes.NewReader(buf.Bytes())); done <- err }()
+	select {
+	case err := <-done:
+		assert.ErrorIs(t, err, ErrTooManyEntries)
+	case <-time.After(30 * time.Second):
+		t.Fatal("Normalize did not return")
+	}
+}
+
+func TestNormalizeBoundsEntries(t *testing.T) {
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	for i := 0; i <= maxEntries; i++ {
+		require.NoError(t, tw.WriteHeader(&tar.Header{Name: fmt.Sprintf("f%d", i), Typeflag: tar.TypeReg, Mode: 0o644}))
+	}
+	require.NoError(t, tw.Close())
+	require.NoError(t, gz.Close())
+	_, err := Normalize(bytes.NewReader(buf.Bytes()))
+	assert.ErrorIs(t, err, ErrTooManyEntries)
 }

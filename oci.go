@@ -7,9 +7,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"oras.land/oras-go/v2/content"
@@ -18,7 +20,7 @@ import (
 	"oras.land/oras-go/v2/registry/remote/credentials"
 )
 
-// OCI is the other place a chart lives (D34): `oci://ghcr.io/org/charts/foo`
+// OCI is the other place a chart lives: `oci://ghcr.io/org/charts/foo`
 // at a tag that is the chart's version. Pulling one is a manifest and a
 // single layer, the chart's own tgz, found by its media type. oras-go speaks
 // the distribution protocol: the WWW-Authenticate bearer exchange, the token
@@ -40,10 +42,11 @@ type ociClient struct {
 	// docker is the machine's docker credential store, consulted after creds.
 	docker credentials.Store
 	cache  auth.Cache
+	http   *http.Client
 }
 
-func newOCIClient(creds Credentials) *ociClient {
-	c := &ociClient{creds: creds, cache: auth.NewCache()}
+func newOCIClient(opts Options) *ociClient {
+	c := &ociClient{creds: opts.Credentials, cache: auth.NewCache(), http: newHTTPClient(2*time.Minute, opts.Dial)}
 	if store, err := credentials.NewStoreFromDocker(credentials.StoreOptions{}); err == nil {
 		c.docker = store
 	}
@@ -66,11 +69,13 @@ func (c *ociClient) repository(ref string) (*remote.Repository, error) {
 	if err != nil {
 		return nil, fmt.Errorf("oci://%s: %w", ref, err)
 	}
-	repo.Client = &auth.Client{
+	client := &auth.Client{
+		Client:     c.http,
 		Cache:      c.cache,
 		Credential: c.credentialFor(ref),
 	}
-	repo.Client.(*auth.Client).SetUserAgent("admiral-cli")
+	client.SetUserAgent("admiral-cli")
+	repo.Client = client
 	if strings.HasPrefix(ref, "localhost:") || strings.HasPrefix(ref, "127.0.0.1:") {
 		repo.PlainHTTP = true
 	}
@@ -162,7 +167,9 @@ func ociChartRef(repository, name string) string {
 // Pulled is a chart brought down from an OCI registry to publish: the
 // directory its tgz unpacked to, and what to say about where it came from.
 type Pulled struct {
-	Dir        string
+	// Dir is the unpacked chart, ready to Pack.
+	Dir string
+	// Provenance says which repository, tag and manifest digest it came from.
 	Provenance Provenance
 	// Cleanup removes Dir.
 	Cleanup func()
@@ -195,7 +202,7 @@ func PullChart(ctx context.Context, reference string, creds Credentials) (*Pulle
 	if err != nil {
 		return nil, err
 	}
-	data, digest, err := newOCIClient(creds).pullChart(ctx, repository, name, tag)
+	data, digest, err := newOCIClient(Options{Credentials: creds}).pullChart(ctx, repository, name, tag)
 	if err != nil {
 		return nil, err
 	}

@@ -18,16 +18,16 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Credentials answers what a fetch may present to a URL. The platform
+// Credentials answers what a fetch may present to a URL. A server typically
 // registers credentials against a host or URL prefix and resolves them by
-// longest prefix (design section 6); this is that lookup, so the fetcher is
-// the same code whether the answers come from a developer's machine or from
-// registered sources. A nil credential is an anonymous fetch.
+// longest prefix; this is that lookup, so the fetcher is the same code
+// whether the answers come from a developer's machine or from registered
+// sources. A nil credential is an anonymous fetch.
 type Credentials interface {
 	Lookup(ctx context.Context, rawURL string) (*Credential, error)
 }
 
-// Credential is what a fetch presents, one of three protocol families (D33):
+// Credential is what a fetch presents, one of three protocol families:
 // a bearer token, basic auth, or an SSH private key. Exactly one is set. Each
 // fetch site takes the family its protocol speaks and refuses another by
 // name; a GitHub App is not a fourth family but a lookup that yields a Token.
@@ -73,11 +73,14 @@ func (c *Credential) family() string {
 }
 
 // authorize sets the request's Authorization header from a bearer token or
-// basic auth; an SSH key has no HTTP form.
-func (c *Credential) authorize(req *http.Request) error {
+// basic auth; an SSH key has no HTTP form. A credential rides https only,
+// unless the caller allowed cleartext.
+func (c *Credential) authorize(req *http.Request, insecure bool) error {
 	switch {
 	case c == nil:
 		return nil
+	case req.URL.Scheme != "https" && !insecure:
+		return fmt.Errorf("%w: %s to %s", ErrInsecureHTTP, c.family(), redactURL(req.URL))
 	case c.SSHKey != nil:
 		return fmt.Errorf("%w: %s to %s", ErrCredentialFamily, c.family(), req.URL.Hostname())
 	case c.Basic != nil:
@@ -156,16 +159,31 @@ func (a *AmbientCredentials) fromHelmRepositories(rawURL string) (*Credential, e
 	}
 	var best *Credential
 	bestLen := 0
+	want := canonicalURL(rawURL)
 	for _, r := range f.Repositories {
-		u := strings.TrimSuffix(r.URL, "/")
+		u := canonicalURL(r.URL)
 		if r.Username == "" || u == "" {
 			continue
 		}
-		if (rawURL == u || strings.HasPrefix(rawURL, u+"/")) && len(u) > bestLen {
+		if (want == u || strings.HasPrefix(want, u+"/")) && len(u) > bestLen {
 			best, bestLen = &Credential{Basic: &BasicAuth{Username: r.Username, Password: r.Password}}, len(u)
 		}
 	}
 	return best, nil
+}
+
+// canonicalURL is a URL for prefix comparison: scheme and host lowercased,
+// because both are case-insensitive, and no trailing slash. The path is
+// left alone; it is not.
+func canonicalURL(rawURL string) string {
+	rawURL = strings.TrimSuffix(rawURL, "/")
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return rawURL
+	}
+	u.Scheme = strings.ToLower(u.Scheme)
+	u.Host = strings.ToLower(u.Host)
+	return u.String()
 }
 
 // helmConfigDir is where Helm keeps repositories.yaml: XDG on Linux,
@@ -259,7 +277,7 @@ func (a *AmbientCredentials) envValue(name string) string {
 
 // credentialsFromHCL reads `credentials "host" { token = "..." }` blocks.
 func credentialsFromHCL(src []byte, filename, host string) (string, error) {
-	f, diags := hclsyntax.ParseConfig(src, filename, hcl.Pos{Line: 1, Column: 1})
+	f, diags := hclsyntax.ParseConfig(src, filename, hcl.InitialPos)
 	if diags.HasErrors() {
 		return "", fmt.Errorf("%s: %s", filename, diags.Error())
 	}
