@@ -17,7 +17,7 @@ func TestDescribe(t *testing.T) {
 
 	repo := t.TempDir()
 	run := func(args ...string) {
-		cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
+		cmd := exec.Command("git", append([]string{"-c", "commit.gpgsign=false", "-C", repo}, args...)...)
 		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
 		out, err := cmd.CombinedOutput()
 		require.NoError(t, err, "git %v: %s", args, out)

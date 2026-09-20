@@ -20,8 +20,9 @@ import (
 // helmRepo serves a Helm repository: an index naming one chart at one
 // version, and the archive it points at, relative to the repository the
 // way most indexes do. digest is the index's claim about the archive.
-func helmRepo(t *testing.T, name, version string, archive []byte, digest string) *httptest.Server {
+func helmRepo(t *testing.T, version string, archive []byte, digest string) *httptest.Server {
 	t.Helper()
+	const name = "openfga"
 	mux := http.NewServeMux()
 	mux.HandleFunc("/index.yaml", func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintf(w, "apiVersion: v1\nentries:\n  %s:\n  - version: %s\n    urls:\n    - %s-%s.tgz\n    digest: %s\n",
@@ -73,7 +74,7 @@ func wrapperChart(t *testing.T, repoURL, lock string) string {
 
 func TestPackVendorsChartDependenciesFromTheLock(t *testing.T) {
 	archive := chartArchive(t)
-	repo := helmRepo(t, "openfga", "0.3.9", archive, "sha256:"+sha(archive))
+	repo := helmRepo(t, "0.3.9", archive, "sha256:"+sha(archive))
 	dir := wrapperChart(t, repo.URL, "dependencies:\n- name: openfga\n  repository: "+repo.URL+"\n  version: 0.3.9\ndigest: sha256:abc\n")
 
 	p, err := Pack(dir)
@@ -106,7 +107,7 @@ func TestPackKeepsADependencyAlreadyUnderCharts(t *testing.T) {
 
 func TestPackRefusesWhatTheLockCannotVouchFor(t *testing.T) {
 	archive := chartArchive(t)
-	repo := helmRepo(t, "openfga", "0.3.9", archive, "sha256:"+sha(archive))
+	repo := helmRepo(t, "0.3.9", archive, "sha256:"+sha(archive))
 
 	t.Run("no lock", func(t *testing.T) {
 		_, err := Pack(wrapperChart(t, repo.URL, ""))
@@ -132,7 +133,7 @@ func TestPackRefusesWhatTheLockCannotVouchFor(t *testing.T) {
 
 func TestPackRefusesAnArchiveTheIndexDisowns(t *testing.T) {
 	archive := chartArchive(t)
-	repo := helmRepo(t, "openfga", "0.3.9", archive, "sha256:"+sha([]byte("something else")))
+	repo := helmRepo(t, "0.3.9", archive, "sha256:"+sha([]byte("something else")))
 	dir := wrapperChart(t, repo.URL, "dependencies:\n- name: openfga\n  repository: "+repo.URL+"\n  version: 0.3.9\n")
 	_, err := Pack(dir)
 	require.Error(t, err)

@@ -1,15 +1,11 @@
 package bundle
 
 import (
-	"bytes"
-	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -158,20 +154,23 @@ func (c *ociClient) pullChart(ctx context.Context, repository, name, version str
 	return data, desc.Digest.String(), nil
 }
 
-// ociChartRef is the reference a pin records for a chart dependency:
-// `oci://host/path/name`.
-func ociChartRef(repository, name string) string {
-	return strings.TrimSuffix(repository, "/") + "/" + name
-}
-
 // Pulled is a chart brought down from an OCI registry to publish: the
 // directory its tgz unpacked to, and what to say about where it came from.
 type Pulled struct {
-	// Dir is the unpacked chart, ready to Pack.
+	// Dir is the artifact, ready to Pack.
 	Dir string
-	// Provenance says which repository, tag and manifest digest it came from.
+	// Boundary is the fetched tree Dir sits in; Pack with Options.Boundary
+	// set to it, so relative calls reach siblings and nothing else.
+	Boundary string
+	// Name is the artifact's own name: the chart's, the module's, the
+	// repository's, the directory's.
+	Name string
+	// Version is the artifact's version when it has one: a chart's, a
+	// module's as resolved. Empty for a git tree or an archive.
+	Version string
+	// Provenance says where it came from and what that resolved to.
 	Provenance Provenance
-	// Cleanup removes Dir.
+	// Cleanup removes everything Pull made.
 	Cleanup func()
 }
 
@@ -194,45 +193,11 @@ func ParseOCIChartReference(reference string) (repository, name, tag string, err
 	return "oci://" + rest[:slash], name, tag, nil
 }
 
-// PullChart fetches the chart a reference names and unpacks it to publish
-// from. The chart's own dependencies come inside its tgz, as `helm package`
-// left them.
+// PullChart is Pull for an `oci://host/path/name:version` reference.
 func PullChart(ctx context.Context, reference string, creds Credentials) (*Pulled, error) {
 	repository, name, tag, err := ParseOCIChartReference(reference)
 	if err != nil {
 		return nil, err
 	}
-	data, digest, err := newOCIClient(Options{Credentials: creds}).pullChart(ctx, repository, name, tag)
-	if err != nil {
-		return nil, err
-	}
-	dir, err := os.MkdirTemp("", "admiral-pull-*")
-	if err != nil {
-		return nil, err
-	}
-	cleanup := func() { os.RemoveAll(dir) }
-	gz, err := gzip.NewReader(bytes.NewReader(data))
-	if err != nil {
-		cleanup()
-		return nil, fmt.Errorf("%s: %w", reference, err)
-	}
-	if err := Untar(gz, dir); err != nil {
-		cleanup()
-		return nil, fmt.Errorf("%s: %w", reference, err)
-	}
-	// A packaged chart is one top-level directory named after the chart.
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		cleanup()
-		return nil, err
-	}
-	if len(entries) != 1 || !entries[0].IsDir() {
-		cleanup()
-		return nil, fmt.Errorf("%s: the archive is not one chart directory", reference)
-	}
-	return &Pulled{
-		Dir:        filepath.Join(dir, entries[0].Name()),
-		Provenance: Provenance{URI: ociChartRef(repository, name), Ref: tag, Commit: digest},
-		Cleanup:    cleanup,
-	}, nil
+	return Pull(ctx, Source{OCIChart: &OCIChartSource{Reference: repository + "/" + name, Version: tag}}, Options{Credentials: creds})
 }
