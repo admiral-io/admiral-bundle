@@ -53,32 +53,26 @@ Rewrites are done with `hclwrite`, so comments, spacing and every other
 attribute in the file stay byte-for-byte as they were. Two calls that resolve
 to the same thing share one vendored copy.
 
-Git sources need a transport. Two are provided:
+Git sources are cloned in process with [go-git](https://github.com/go-git/go-git):
+no `git` binary is required, and the behavior is the same on every platform
+and in a server image that carries none.
 
 ```go
-import (
-    "go.admiral.io/bundle"
-    "go.admiral.io/bundle/gitcmd"
-)
-
 packed, err := bundle.PackContext(ctx, root, bundle.Options{
     Credentials: bundle.NewAmbientCredentials(),
-    Git: &gitcmd.Transport{
-        Repo: gitcmd.DescribeRepo(ctx, root),
-    },
+    // A source naming the repository being published is read from its
+    // object store rather than cloned: a root pinning its own sibling
+    // modules at a SHA needs no credential at all.
+    Git: &bundle.Git{Repo: bundle.OpenRepo(root)},
 })
 ```
 
-- **`gitcmd`** runs the machine's `git` binary, so the developer's SSH agent,
-  credential helpers and `insteadOf` rules all apply. When `Repo` is set, a
-  source that names the repository being published is read from the local
-  object store instead of cloned — a root pinning its own sibling modules at a
-  SHA needs no credential at all.
-- **`gitgo`** clones in-process with [go-git](https://github.com/go-git/go-git),
-  for an environment that has no `git` binary. Credentials come only from the
-  `Credentials` lookup.
-
-Without a transport, a git source is refused.
+Without `Options.Git`, git sources still clone with `bundle.Git{}`: the
+host's `~/.ssh/known_hosts` and ssh agent for ssh, and for https whatever the
+`Credentials` lookup answers. `AmbientCredentials` reads `~/.netrc` and
+`~/.git-credentials` for that; git's own credential helpers are the `git`
+binary's and are not consulted. A server sets `HostKeyCallback` to the host
+keys it trusts.
 
 ### Helm
 
@@ -161,11 +155,8 @@ Bundles and the trees they are built from are read as hostile:
   that resolves outside the tree is refused. `Normalize` applies the same
   rule to what arrives, so `Close` and `Inspect` read the same tree whatever
   produced the archive.
-- A git ref that could be read as a command-line option (`--upload-pack=…`)
-  is refused before it reaches any transport.
-- SSH keys handed to `gitcmd` are written to a file only the process can read
-  and removed after the clone; tokens are presented through a credential
-  helper, never on a command line or in a URL.
+- No fetch runs a binary. Keys and tokens are presented to go-git in memory
+  and never appear on a command line, in a file, or in a URL.
 - Sources and URLs are redacted wherever they are recorded or printed: the
   query string is dropped and a password in the userinfo is masked.
 
@@ -180,12 +171,12 @@ Three `Options` are for a server packing a tree it did not write:
 - `Dial`: the dialer every HTTP fetch uses. `DialPublic` refuses loopback,
   private, link-local and other non-public destinations after name
   resolution, so an untrusted tree cannot point a fetch at a metadata
-  service or an internal host. Git transports have their own network; `gitgo`
-  is configured separately.
+  service or an internal host. go-git has its own network and is not covered
+  by `Dial`.
 
-`gitgo` never forwards the credential a clone was handed to that
-repository's submodules; each is looked up by its own URL through
-`Transport.Credentials`.
+`Git` never forwards the credential a clone was handed to that repository's
+submodules; each is looked up by its own URL through `Git.Credentials`,
+which `Options.git()` fills from `Options.Credentials`.
 
 ## Provenance
 

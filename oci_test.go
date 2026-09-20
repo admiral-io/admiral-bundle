@@ -97,32 +97,32 @@ func TestOCIPullChart(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("anonymous", func(t *testing.T) {
-		reg := newFakeOCI(t, "acme/charts/openfga", "0.3.9", archive, helmChartLayer, nil)
+		reg := newFakeOCI(t, "acme/charts/sample", "0.3.9", archive, helmChartLayer, nil)
 		c := newOCIClient(Options{})
 		c.docker = nil
-		data, digest, err := c.pullChart(ctx, reg.repository(), "openfga", "0.3.9")
+		data, digest, err := c.pullChart(ctx, reg.repository(), "sample", "0.3.9")
 		require.NoError(t, err)
 		assert.Equal(t, archive, data)
 		assert.True(t, strings.HasPrefix(digest, "sha256:"))
 	})
 
 	t.Run("bearer challenge with the seam's basic auth", func(t *testing.T) {
-		reg := newFakeOCI(t, "acme/charts/openfga", "0.3.9", archive, helmChartLayer, &BasicAuth{Username: "u", Password: "p"})
+		reg := newFakeOCI(t, "acme/charts/sample", "0.3.9", archive, helmChartLayer, &BasicAuth{Username: "u", Password: "p"})
 		c := newOCIClient(Options{Credentials: staticCredentials{reg.repository(): {Basic: &BasicAuth{Username: "u", Password: "p"}}}})
 		c.docker = nil
-		data, _, err := c.pullChart(ctx, reg.repository(), "openfga", "0.3.9")
+		data, _, err := c.pullChart(ctx, reg.repository(), "sample", "0.3.9")
 		require.NoError(t, err)
 		assert.Equal(t, archive, data)
 		assert.Equal(t, 1, reg.tokens, "one token exchange")
 
 		c = newOCIClient(Options{Credentials: staticCredentials{reg.repository(): {Basic: &BasicAuth{Username: "u", Password: "wrong"}}}})
 		c.docker = nil
-		_, _, err = c.pullChart(ctx, reg.repository(), "openfga", "0.3.9")
+		_, _, err = c.pullChart(ctx, reg.repository(), "sample", "0.3.9")
 		require.Error(t, err)
 
 		c = newOCIClient(Options{Credentials: staticCredentials{reg.repository(): {SSHKey: &SSHKey{PEM: []byte("k")}}}})
 		c.docker = nil
-		_, _, err = c.pullChart(ctx, reg.repository(), "openfga", "0.3.9")
+		_, _, err = c.pullChart(ctx, reg.repository(), "sample", "0.3.9")
 		assert.ErrorIs(t, err, ErrCredentialFamily)
 	})
 
@@ -135,13 +135,13 @@ func TestOCIPullChart(t *testing.T) {
 	})
 
 	t.Run("wrapper chart with an oci dependency", func(t *testing.T) {
-		reg := newFakeOCI(t, "acme/charts/openfga", "0.3.9", archive, helmChartLayer, nil)
-		dir := wrapperChart(t, reg.repository(), "dependencies:\n- name: openfga\n  repository: "+reg.repository()+"\n  version: 0.3.9\n")
+		reg := newFakeOCI(t, "acme/charts/sample", "0.3.9", archive, helmChartLayer, nil)
+		dir := wrapperChart(t, reg.repository(), "dependencies:\n- name: sample\n  repository: "+reg.repository()+"\n  version: 0.3.9\n")
 		p, err := Pack(dir)
 		require.NoError(t, err)
-		assert.Contains(t, entries(t, p.Bytes), "charts/openfga-0.3.9.tgz")
-		assert.Equal(t, []Vendored{{Caller: ".", Source: reg.repository() + "/openfga 0.3.9", Into: "charts/openfga-0.3.9.tgz"}}, p.Vendored)
-		assert.Equal(t, []Pin{{Source: reg.repository() + "/openfga", Constraint: "^0.3.0", Resolved: "0.3.9"}}, p.Pins)
+		assert.Contains(t, entries(t, p.Bytes), "charts/sample-0.3.9.tgz")
+		assert.Equal(t, []Vendored{{Caller: ".", Source: reg.repository() + "/sample 0.3.9", Into: "charts/sample-0.3.9.tgz"}}, p.Vendored)
+		assert.Equal(t, []Pin{{Source: reg.repository() + "/sample", Constraint: "^0.3.0", Resolved: "0.3.9"}}, p.Pins)
 	})
 }
 
@@ -168,13 +168,13 @@ func TestParseOCIChartReference(t *testing.T) {
 
 func TestPullChart(t *testing.T) {
 	archive := chartArchive(t)
-	reg := newFakeOCI(t, "acme/charts/openfga", "0.3.9", archive, helmChartLayer, nil)
-	pulled, err := PullChart(context.Background(), reg.repository()+"/openfga:0.3.9", nil)
+	reg := newFakeOCI(t, "acme/charts/sample", "0.3.9", archive, helmChartLayer, nil)
+	pulled, err := PullChart(context.Background(), reg.repository()+"/sample:0.3.9", nil)
 	require.NoError(t, err)
 	t.Cleanup(pulled.Cleanup)
 	assert.FileExists(t, filepath.Join(pulled.Dir, "Chart.yaml"))
-	assert.Equal(t, "openfga", filepath.Base(pulled.Dir), "the chart's own directory")
-	assert.Equal(t, reg.repository()+"/openfga", pulled.Provenance.URI)
+	assert.Equal(t, "sample", filepath.Base(pulled.Dir), "the chart's own directory")
+	assert.Equal(t, reg.repository()+"/sample", pulled.Provenance.URI)
 	assert.Equal(t, "0.3.9", pulled.Provenance.Ref)
 	assert.True(t, strings.HasPrefix(pulled.Provenance.Commit, "sha256:"), "the manifest digest")
 
@@ -184,8 +184,8 @@ func TestPullChart(t *testing.T) {
 	pulled.Cleanup()
 	assert.NoDirExists(t, pulled.Dir)
 
-	_, err = PullChart(context.Background(), reg.repository()+"/openfga", nil)
+	_, err = PullChart(context.Background(), reg.repository()+"/sample", nil)
 	require.Error(t, err, "a pull names one version")
-	_, err = PullChart(context.Background(), reg.repository()+"/openfga:nope", nil)
+	_, err = PullChart(context.Background(), reg.repository()+"/sample:nope", nil)
 	require.Error(t, err, "a tag the registry does not have")
 }

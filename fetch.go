@@ -111,11 +111,8 @@ func forcedGetter(source string) (string, string) {
 	return "", source
 }
 
-// GitTransport clones a repository. It is the one part of fetching that
-// differs by host: gitcmd runs the machine's git binary, which has its
-// agent, helpers and insteadOf rules, and can read the checkout being
-// published; gitgo clones in-process with go-git, for an environment that
-// has no git binary.
+// GitTransport clones a repository. Git, go-git in process, is the one
+// implementation; the interface is the seam a test stands in for.
 type GitTransport interface {
 	// Clone brings the repository at u, at ref (empty is the default branch),
 	// into dst, which does not exist yet, and returns the commit it is at.
@@ -123,9 +120,6 @@ type GitTransport interface {
 	// cred is what the Credentials lookup gave for u, or nil.
 	Clone(ctx context.Context, u *url.URL, ref, dst string, cred *Credential) (string, error)
 }
-
-// ErrNoGitTransport is a git source with no transport to fetch it.
-var ErrNoGitTransport = errors.New("module source is a git repository and no git transport is configured")
 
 // fetched is one remote tree on disk and where it goes in the bundle.
 type fetched struct {
@@ -186,7 +180,7 @@ func newFetcher(dir string, opts Options) *fetcher {
 		},
 		http:     newHTTPClient(5*time.Minute, opts.Dial),
 		creds:    opts.Credentials,
-		git:      opts.Git,
+		git:      opts.git(),
 		insecure: opts.AllowInsecureHTTP,
 		boundary: opts.Boundary,
 		trees:    map[string]*fetched{},
@@ -386,9 +380,6 @@ func (f *fetcher) fetch(ctx context.Context, source string, local bool) (string,
 // fetchGit clones u at its ref through the transport. The pin resolves the
 // ref to the commit.
 func (f *fetcher) fetchGit(ctx context.Context, source string, u *url.URL, dst string) (string, *fetched, error) {
-	if f.git == nil {
-		return "", nil, fmt.Errorf("%w: %s", ErrNoGitTransport, redactSource(source))
-	}
 	ref := u.Query().Get("ref")
 	written := redactSource(source)
 	// A ref is handed to a transport that may run git; one shaped like an
@@ -440,7 +431,7 @@ func (f *fetcher) fetchArchive(ctx context.Context, source string, u *url.URL, d
 	if err != nil {
 		return "", nil, err
 	}
-	req.Header.Set("User-Agent", "admiral-cli")
+	req.Header.Set("User-Agent", userAgent)
 	if f.creds != nil {
 		cred, err := f.creds.Lookup(ctx, u.String())
 		if err != nil {

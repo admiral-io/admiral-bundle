@@ -157,3 +157,6 @@ func redactURL(u *url.URL) string {
 	c.ForceQuery = false
 	return c.Redacted()
 }
+
+// userAgent is what every fetch identifies itself as.
+const userAgent = "go.admiral.io/bundle"

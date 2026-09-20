@@ -213,7 +213,7 @@ func (r *registryClient) get(ctx context.Context, host string, u *url.URL) (*htt
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "admiral-cli")
+	req.Header.Set("User-Agent", userAgent)
 	if r.creds != nil {
 		cred, err := r.creds.Lookup(ctx, "https://"+host+"/")
 		if err != nil {

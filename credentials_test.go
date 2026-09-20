@@ -57,6 +57,25 @@ func TestAmbientCredentials(t *testing.T) {
 	c, err = a.Lookup(context.Background(), "https://charts.public.example/index.yaml")
 	require.NoError(t, err)
 	assert.Nil(t, c, "no username, nothing to present")
+
+	// What git stores for https: netrc first, then the store helper's file.
+	require.NoError(t, os.WriteFile(filepath.Join(home, ".netrc"), []byte(
+		"machine gitlab.acme.example login deploy password nr-secret\ndefault login anon password anon-pw\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(home, ".git-credentials"), []byte(
+		"https://x-access-token:ghp_stored@github.com\n"), 0o600))
+	c, err = a.Lookup(context.Background(), "https://gitlab.acme.example/acme/infra.git")
+	require.NoError(t, err)
+	assert.Equal(t, &BasicAuth{Username: "deploy", Password: "nr-secret"}, c.Basic)
+	c, err = a.Lookup(context.Background(), "https://github.com/acme/infra.git")
+	require.NoError(t, err)
+	assert.Equal(t, &BasicAuth{Username: "anon", Password: "anon-pw"}, c.Basic, "netrc's default entry wins over git-credentials")
+	require.NoError(t, os.Remove(filepath.Join(home, ".netrc")))
+	c, err = a.Lookup(context.Background(), "https://github.com/acme/infra.git")
+	require.NoError(t, err)
+	assert.Equal(t, &BasicAuth{Username: "x-access-token", Password: "ghp_stored"}, c.Basic)
+	c, err = a.Lookup(context.Background(), "ssh://git@github.com/acme/infra.git")
+	require.NoError(t, err)
+	assert.Nil(t, c, "ssh is the agent's business")
 }
 
 func TestCredentialFamilies(t *testing.T) {
@@ -123,12 +142,12 @@ func TestHelmRepositoryMatchIgnoresCaseInSchemeAndHost(t *testing.T) {
 	require.NoError(t, os.WriteFile(cfg, []byte("repositories:\n- name: acme\n  url: HTTPS://Charts.Example.Test/Stable/\n  username: u\n  password: p\n"), 0o644))
 	a := &AmbientCredentials{environ: []string{"HELM_REPOSITORY_CONFIG=" + cfg}, home: dir}
 
-	cred, err := a.Lookup(context.Background(), "https://charts.example.test/Stable/openfga-0.3.9.tgz")
+	cred, err := a.Lookup(context.Background(), "https://charts.example.test/Stable/sample-0.3.9.tgz")
 	require.NoError(t, err)
 	require.NotNil(t, cred, "host and scheme are case-insensitive")
 	assert.Equal(t, "u", cred.Basic.Username)
 
-	cred, err = a.Lookup(context.Background(), "https://charts.example.test/stable/openfga-0.3.9.tgz")
+	cred, err = a.Lookup(context.Background(), "https://charts.example.test/stable/sample-0.3.9.tgz")
 	require.NoError(t, err)
 	assert.Nil(t, cred, "the path is not")
 }
@@ -163,7 +182,7 @@ func TestCredentialsRideHTTPSOnly(t *testing.T) {
 	assert.ErrorIs(t, err, ErrInsecureHTTP)
 
 	// A chart repository over http, likewise.
-	dir := wrapperChart(t, srv.URL, "dependencies:\n- name: openfga\n  repository: "+srv.URL+"\n  version: 0.3.9\n")
+	dir := wrapperChart(t, srv.URL, "dependencies:\n- name: sample\n  repository: "+srv.URL+"\n  version: 0.3.9\n")
 	_, err = PackContext(ctx, dir, Options{Credentials: creds})
 	assert.ErrorIs(t, err, ErrInsecureHTTP)
 }

@@ -86,7 +86,9 @@ type Packed struct {
 // written by someone else.
 type Options struct {
 	Credentials Credentials
-	Git         GitTransport
+	// Git is the transport git sources are cloned with; nil is Git{}, go-git
+	// with the host's known_hosts and ssh agent.
+	Git GitTransport
 	// Boundary is a directory that local sources and `file://` sources may
 	// not escape: a module call `../../..` or a chart dependency
 	// `file://../..` resolving outside it is refused rather than vendored.
@@ -104,6 +106,15 @@ type Options struct {
 	// which is what a server fetching on someone else's behalf wants. Git
 	// transports have their own network and are not covered.
 	Dial Dialer
+}
+
+// git is the transport: what was given, else go-git with the host's own
+// known_hosts and ssh agent.
+func (o Options) git() GitTransport {
+	if o.Git != nil {
+		return o.Git
+	}
+	return &Git{Credentials: o.Credentials}
 }
 
 // Pack stages, closes and packs the component at root, anonymously and
