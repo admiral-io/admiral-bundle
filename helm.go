@@ -295,7 +295,7 @@ func (f *helmFetcher) get(ctx context.Context, rawURL string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "admiral-cli")
+	req.Header.Set("User-Agent", userAgent)
 	if f.creds != nil {
 		cred, err := f.creds.Lookup(ctx, rawURL)
 		if err != nil {
@@ -403,7 +403,7 @@ func findDependency(declared []chartDependency, locked chartDependency) *chartDe
 }
 
 // dependencySource names a dependency the way it was declared: its
-// repository and chart, `https://openfga.github.io/helm-charts/openfga`.
+// repository and chart, `https://charts.example.com/stable/sample`.
 func dependencySource(dep chartDependency) string {
 	if dep.Repository == "" {
 		return dep.Name

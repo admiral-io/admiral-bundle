@@ -24,18 +24,18 @@ func TestPullNamesExactlyOneSource(t *testing.T) {
 
 func TestPullOCIChart(t *testing.T) {
 	archive := chartArchive(t)
-	reg := newFakeOCI(t, "acme/charts/openfga", "0.3.9", archive, helmChartLayer, nil)
+	reg := newFakeOCI(t, "acme/charts/sample", "0.3.9", archive, helmChartLayer, nil)
 	c := newOCIClient(Options{})
 	c.docker = nil
 
-	p, err := pullOCIChart(context.Background(), &OCIChartSource{Reference: reg.repository() + "/openfga", Version: "0.3.9"}, Options{})
+	p, err := pullOCIChart(context.Background(), &OCIChartSource{Reference: reg.repository() + "/sample", Version: "0.3.9"}, Options{})
 	require.NoError(t, err)
 	defer p.Cleanup()
-	assert.Equal(t, "openfga", p.Name)
+	assert.Equal(t, "sample", p.Name)
 	assert.Equal(t, "0.3.9", p.Version)
 	assert.Equal(t, p.Dir, p.Boundary, "a chart is its own tree")
 	assert.FileExists(t, filepath.Join(p.Dir, "Chart.yaml"))
-	assert.Equal(t, reg.repository()+"/openfga", p.Provenance.URI)
+	assert.Equal(t, reg.repository()+"/sample", p.Provenance.URI)
 	assert.Equal(t, "0.3.9", p.Provenance.Ref)
 	assert.True(t, strings.HasPrefix(p.Provenance.Commit, "sha256:"))
 
@@ -49,15 +49,15 @@ func TestPullHelmChart(t *testing.T) {
 	archive := chartArchive(t)
 	repo := helmRepo(t, archive, "sha256:"+sha(archive))
 
-	p, err := Pull(context.Background(), Source{HelmChart: &HelmChartSource{Repository: repo.URL, Chart: "openfga", Version: "0.3.9"}}, Options{})
+	p, err := Pull(context.Background(), Source{HelmChart: &HelmChartSource{Repository: repo.URL, Chart: "sample", Version: "0.3.9"}}, Options{})
 	require.NoError(t, err)
 	defer p.Cleanup()
-	assert.Equal(t, "openfga", p.Name)
+	assert.Equal(t, "sample", p.Name)
 	assert.Equal(t, "0.3.9", p.Version)
-	assert.Equal(t, repo.URL+"/openfga", p.Provenance.URI)
+	assert.Equal(t, repo.URL+"/sample", p.Provenance.URI)
 	assert.Equal(t, "sha256:"+sha(archive), p.Provenance.Commit, "the archive's own digest")
 
-	_, err = Pull(context.Background(), Source{HelmChart: &HelmChartSource{Repository: repo.URL, Chart: "openfga", Version: "0.3.8"}}, Options{})
+	_, err = Pull(context.Background(), Source{HelmChart: &HelmChartSource{Repository: repo.URL, Chart: "sample", Version: "0.3.8"}}, Options{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "0.3.8 is not in the index")
 }
@@ -140,8 +140,9 @@ func TestPullGitTree(t *testing.T) {
 	assert.ErrorIs(t, err, ErrSubdirMissing)
 	_, err = Pull(context.Background(), Source{GitTree: &GitTreeSource{URL: "file://" + upstream, Path: "../etc"}}, opts)
 	require.Error(t, err)
-	_, err = Pull(context.Background(), Source{GitTree: &GitTreeSource{URL: "file://" + upstream}}, Options{})
-	assert.ErrorIs(t, err, ErrNoGitTransport)
+	p, err = Pull(context.Background(), Source{GitTree: &GitTreeSource{URL: "file://" + upstream}}, Options{})
+	require.NoError(t, err, "no transport given means go-git")
+	p.Cleanup()
 }
 
 func TestPullArchive(t *testing.T) {

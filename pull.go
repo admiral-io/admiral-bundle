@@ -19,8 +19,8 @@ import (
 
 // Source names an artifact to pull and publish: a chart in an OCI registry
 // or an HTTP repository, a module in a module registry, a git tree at a
-// ref, an archive. Exactly one field is set. This is the second on-ramp
-// (design D35): the artifact is not the tenant's, and Admiral takes a copy.
+// ref, an archive. Exactly one field is set. The artifact is somebody
+// else's; what is published is a copy, with provenance saying where from.
 type Source struct {
 	OCIChart       *OCIChartSource
 	HelmChart      *HelmChartSource

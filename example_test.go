@@ -8,11 +8,10 @@ import (
 	"os"
 
 	"go.admiral.io/bundle"
-	"go.admiral.io/bundle/gitcmd"
 )
 
-// Pack a component anonymously, with no git transport: local escapes and
-// registry addresses are vendored, a git source is refused.
+// Pack a component anonymously: local escapes, registry addresses and public
+// git sources are vendored; a private source needs credentials.
 func ExamplePack() {
 	packed, err := bundle.Pack("./infra/network")
 	if err != nil {
@@ -27,20 +26,18 @@ func ExamplePack() {
 	}
 }
 
-// Pack with the machine's credentials and its git binary, so private
-// registries, private chart repositories and git sources all resolve the way
-// they would for the developer running it.
+// Pack with the machine's credentials, so private registries, private chart
+// repositories and git sources resolve the way they would for the developer
+// running it: the ssh agent, ~/.netrc, the tofu and helm and docker configs.
 func ExamplePackContext() {
 	ctx := context.Background()
 	root := "./infra/network"
 
 	packed, err := bundle.PackContext(ctx, root, bundle.Options{
 		Credentials: bundle.NewAmbientCredentials(),
-		Git: &gitcmd.Transport{
-			// A source that names the repository being published is read
-			// from its object store rather than cloned.
-			Repo: gitcmd.DescribeRepo(ctx, root),
-		},
+		// A source that names the repository being published is read from
+		// its object store rather than cloned.
+		Git: &bundle.Git{Repo: bundle.OpenRepo(root)},
 	})
 	if err != nil {
 		log.Fatal(err)

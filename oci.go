@@ -70,7 +70,7 @@ func (c *ociClient) repository(ref string) (*remote.Repository, error) {
 		Cache:      c.cache,
 		Credential: c.credentialFor(ref),
 	}
-	client.SetUserAgent("admiral-cli")
+	client.SetUserAgent(userAgent)
 	repo.Client = client
 	if strings.HasPrefix(ref, "localhost:") || strings.HasPrefix(ref, "127.0.0.1:") {
 		repo.PlainHTTP = true

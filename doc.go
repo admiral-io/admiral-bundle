@@ -20,7 +20,6 @@
 // these are the publish gate: what a registry checks before it accepts a
 // revision, and what it records about one it did.
 //
-// The git transport differs by host and lives in a subpackage: gitcmd runs
-// the machine's git binary, gitgo clones in-process for an environment that
-// has none.
+// Git sources are cloned in process with go-git: no git binary, the same
+// behavior on every platform and in a server image that carries none.
 package bundle
