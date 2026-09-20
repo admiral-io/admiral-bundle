@@ -61,7 +61,7 @@ func TestDialPublic(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(root, "main.tf"), []byte(`module "a" { source = "`+srv.URL+`/net.tgz" }`), 0o644))
 	_, err = PackContext(context.Background(), root, Options{Dial: DialPublic})
 	assert.ErrorIs(t, err, ErrPrivateAddress)
-	dir := wrapperChart(t, srv.URL, "dependencies:\n- name: openfga\n  repository: "+srv.URL+"\n  version: 0.3.9\n")
+	dir := wrapperChart(t, srv.URL, "dependencies:\n- name: sample\n  repository: "+srv.URL+"\n  version: 0.3.9\n")
 	_, err = PackContext(context.Background(), dir, Options{Dial: DialPublic})
 	assert.ErrorIs(t, err, ErrPrivateAddress)
 }

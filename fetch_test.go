@@ -11,7 +11,6 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -189,54 +188,12 @@ func TestRegistryClient(t *testing.T) {
 
 // --- The walk, end to end ---------------------------------------------------
 
-// testGit is the smallest GitTransport: clone with the git binary, check out
-// the ref, report HEAD. gitcmd and gitgo are the real ones and have their
-// own tests; the walk's tests only need a clone to happen.
+// testGit is the transport the walk's tests clone with: go-git over the
+// fixture repositories, no host keys and no agent involved.
 type testGit struct{}
 
-func (testGit) Clone(ctx context.Context, u *url.URL, ref, dst string, _ *Credential) (string, error) {
-	remote := *u
-	remote.RawQuery = ""
-	run := func(dir string, args ...string) (string, error) {
-		cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			return "", fmt.Errorf("git %v: %s", args, out)
-		}
-		return strings.TrimSpace(string(out)), nil
-	}
-	if _, err := run(".", "clone", "-q", remote.String(), dst); err != nil {
-		return "", err
-	}
-	if ref != "" {
-		if _, err := run(dst, "checkout", "-q", ref); err != nil {
-			return "", err
-		}
-	}
-	return run(dst, "rev-parse", "HEAD")
-}
-
-// gitRepo makes a repository with the given files committed, and returns
-// its path and HEAD.
-func gitRepo(t *testing.T, files map[string]string) (string, string) {
-	t.Helper()
-	dir := t.TempDir()
-	run := func(args ...string) string {
-		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
-		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
-		out, err := cmd.CombinedOutput()
-		require.NoError(t, err, "git %v: %s", args, out)
-		return strings.TrimSpace(string(out))
-	}
-	run("init", "-q", "-b", "main")
-	for name, data := range files {
-		p := filepath.Join(dir, filepath.FromSlash(name))
-		require.NoError(t, os.MkdirAll(filepath.Dir(p), 0o755))
-		require.NoError(t, os.WriteFile(p, []byte(data), 0o644))
-	}
-	run("add", ".")
-	run("commit", "-q", "-m", "init")
-	return dir, run("rev-parse", "HEAD")
+func (testGit) Clone(ctx context.Context, u *url.URL, ref, dst string, cred *Credential) (string, error) {
+	return (&Git{}).Clone(ctx, u, ref, dst, cred)
 }
 
 // tgz builds a gzipped tar of files under one top-level directory.

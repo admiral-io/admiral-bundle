@@ -20,8 +20,9 @@ import (
 // helmRepo serves a Helm repository: an index naming one chart at one
 // version, and the archive it points at, relative to the repository the
 // way most indexes do. digest is the index's claim about the archive.
-func helmRepo(t *testing.T, name, version string, archive []byte, digest string) *httptest.Server {
+func helmRepo(t *testing.T, archive []byte, digest string) *httptest.Server {
 	t.Helper()
+	const name, version = "sample", "0.3.9"
 	mux := http.NewServeMux()
 	mux.HandleFunc("/index.yaml", func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintf(w, "apiVersion: v1\nentries:\n  %s:\n  - version: %s\n    urls:\n    - %s-%s.tgz\n    digest: %s\n",
@@ -35,10 +36,10 @@ func helmRepo(t *testing.T, name, version string, archive []byte, digest string)
 	return srv
 }
 
-// chartArchive is openfga 0.3.9 as a repository would serve it.
+// chartArchive is sample 0.3.9 as a repository would serve it.
 func chartArchive(t *testing.T) []byte {
 	t.Helper()
-	const name, version = "openfga", "0.3.9"
+	const name, version = "sample", "0.3.9"
 	var buf bytes.Buffer
 	gz := gzip.NewWriter(&buf)
 	tw := tar.NewWriter(gz)
@@ -63,26 +64,26 @@ func wrapperChart(t *testing.T, repoURL, lock string) string {
 	write := func(name, data string) {
 		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(data), 0o644))
 	}
-	write("Chart.yaml", "apiVersion: v2\nname: openfga\nversion: 0.1.0\ndependencies:\n  - name: openfga\n    version: \"^0.3.0\"\n    repository: "+repoURL+"\n")
+	write("Chart.yaml", "apiVersion: v2\nname: sample\nversion: 0.1.0\ndependencies:\n  - name: sample\n    version: \"^0.3.0\"\n    repository: "+repoURL+"\n")
 	if lock != "" {
 		write("Chart.lock", lock)
 	}
-	write("values.yaml", "openfga:\n  replicaCount: 1\n")
+	write("values.yaml", "sample:\n  replicaCount: 1\n")
 	return dir
 }
 
 func TestPackVendorsChartDependenciesFromTheLock(t *testing.T) {
 	archive := chartArchive(t)
-	repo := helmRepo(t, "openfga", "0.3.9", archive, "sha256:"+sha(archive))
-	dir := wrapperChart(t, repo.URL, "dependencies:\n- name: openfga\n  repository: "+repo.URL+"\n  version: 0.3.9\ndigest: sha256:abc\n")
+	repo := helmRepo(t, archive, "sha256:"+sha(archive))
+	dir := wrapperChart(t, repo.URL, "dependencies:\n- name: sample\n  repository: "+repo.URL+"\n  version: 0.3.9\ndigest: sha256:abc\n")
 
 	p, err := Pack(dir)
 	require.NoError(t, err)
 	assert.Equal(t, KindHelm, p.Kind)
 	files := entries(t, p.Bytes)
-	assert.Equal(t, string(archive), files["charts/openfga-0.3.9.tgz"], "the archive lands under charts/, byte for byte")
-	assert.Equal(t, []Vendored{{Caller: ".", Source: repo.URL + "/openfga 0.3.9", Into: "charts/openfga-0.3.9.tgz"}}, p.Vendored)
-	assert.Equal(t, []Pin{{Source: repo.URL + "/openfga", Constraint: "^0.3.0", Resolved: "0.3.9"}}, p.Pins)
+	assert.Equal(t, string(archive), files["charts/sample-0.3.9.tgz"], "the archive lands under charts/, byte for byte")
+	assert.Equal(t, []Vendored{{Caller: ".", Source: repo.URL + "/sample 0.3.9", Into: "charts/sample-0.3.9.tgz"}}, p.Vendored)
+	assert.Equal(t, []Pin{{Source: repo.URL + "/sample", Constraint: "^0.3.0", Resolved: "0.3.9"}}, p.Pins)
 
 	// The working copy was not touched.
 	_, err = os.Stat(filepath.Join(dir, "charts"))
@@ -93,10 +94,10 @@ func TestPackKeepsADependencyAlreadyUnderCharts(t *testing.T) {
 	// Nothing is served: a repository that would fail if asked.
 	repo := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(500) }))
 	t.Cleanup(repo.Close)
-	dir := wrapperChart(t, repo.URL, "dependencies:\n- name: openfga\n  repository: "+repo.URL+"\n  version: 0.3.9\n")
+	dir := wrapperChart(t, repo.URL, "dependencies:\n- name: sample\n  repository: "+repo.URL+"\n  version: 0.3.9\n")
 	archive := chartArchive(t)
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "charts"), 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "charts", "openfga-0.3.9.tgz"), archive, 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "charts", "sample-0.3.9.tgz"), archive, 0o644))
 
 	p, err := Pack(dir)
 	require.NoError(t, err)
@@ -106,7 +107,7 @@ func TestPackKeepsADependencyAlreadyUnderCharts(t *testing.T) {
 
 func TestPackRefusesWhatTheLockCannotVouchFor(t *testing.T) {
 	archive := chartArchive(t)
-	repo := helmRepo(t, "openfga", "0.3.9", archive, "sha256:"+sha(archive))
+	repo := helmRepo(t, archive, "sha256:"+sha(archive))
 
 	t.Run("no lock", func(t *testing.T) {
 		_, err := Pack(wrapperChart(t, repo.URL, ""))
@@ -118,13 +119,13 @@ func TestPackRefusesWhatTheLockCannotVouchFor(t *testing.T) {
 		assert.ErrorIs(t, err, ErrChartLockStale)
 	})
 	t.Run("version not in the index", func(t *testing.T) {
-		dir := wrapperChart(t, repo.URL, "dependencies:\n- name: openfga\n  repository: "+repo.URL+"\n  version: 0.3.8\n")
+		dir := wrapperChart(t, repo.URL, "dependencies:\n- name: sample\n  repository: "+repo.URL+"\n  version: 0.3.8\n")
 		_, err := Pack(dir)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "0.3.8 is not in the index")
 	})
 	t.Run("alias", func(t *testing.T) {
-		dir := wrapperChart(t, "\"@acme\"", "dependencies:\n- name: openfga\n  repository: \"@acme\"\n  version: 0.3.9\n")
+		dir := wrapperChart(t, "\"@acme\"", "dependencies:\n- name: sample\n  repository: \"@acme\"\n  version: 0.3.9\n")
 		_, err := Pack(dir)
 		assert.ErrorIs(t, err, ErrChartDependencyUnsupported)
 	})
@@ -132,8 +133,8 @@ func TestPackRefusesWhatTheLockCannotVouchFor(t *testing.T) {
 
 func TestPackRefusesAnArchiveTheIndexDisowns(t *testing.T) {
 	archive := chartArchive(t)
-	repo := helmRepo(t, "openfga", "0.3.9", archive, "sha256:"+sha([]byte("something else")))
-	dir := wrapperChart(t, repo.URL, "dependencies:\n- name: openfga\n  repository: "+repo.URL+"\n  version: 0.3.9\n")
+	repo := helmRepo(t, archive, "sha256:"+sha([]byte("something else")))
+	dir := wrapperChart(t, repo.URL, "dependencies:\n- name: sample\n  repository: "+repo.URL+"\n  version: 0.3.9\n")
 	_, err := Pack(dir)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "does not match the index's digest")
@@ -157,12 +158,12 @@ func TestPackVendorsAFileDependency(t *testing.T) {
 }
 
 func TestResolveChartURL(t *testing.T) {
-	got, err := resolveChartURL("https://charts.example.com/stable", "openfga-0.3.9.tgz")
+	got, err := resolveChartURL("https://charts.example.com/stable", "sample-0.3.9.tgz")
 	require.NoError(t, err)
-	assert.Equal(t, "https://charts.example.com/stable/openfga-0.3.9.tgz", got)
-	got, err = resolveChartURL("https://charts.example.com/stable", "https://github.com/acme/releases/openfga-0.3.9.tgz")
+	assert.Equal(t, "https://charts.example.com/stable/sample-0.3.9.tgz", got)
+	got, err = resolveChartURL("https://charts.example.com/stable", "https://github.com/acme/releases/sample-0.3.9.tgz")
 	require.NoError(t, err)
-	assert.Equal(t, "https://github.com/acme/releases/openfga-0.3.9.tgz", got)
+	assert.Equal(t, "https://github.com/acme/releases/sample-0.3.9.tgz", got)
 }
 
 // A file:// dependency is a chart with dependencies of its own; it is

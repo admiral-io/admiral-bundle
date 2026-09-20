@@ -126,7 +126,111 @@ func (a *AmbientCredentials) Lookup(_ context.Context, rawURL string) (*Credenti
 	if tok != "" {
 		return &Credential{Token: tok}, nil
 	}
-	return a.fromHelmRepositories(rawURL)
+	if c, err := a.fromHelmRepositories(rawURL); err != nil || c != nil {
+		return c, err
+	}
+	return a.fromGitCredentials(rawURL)
+}
+
+// fromGitCredentials reads what git stores for an https host: ~/.netrc, and
+// ~/.git-credentials as the `store` helper writes it. This is the laptop
+// case for a private repository over https; git's other credential helpers
+// are the git binary's own and are not consulted.
+func (a *AmbientCredentials) fromGitCredentials(rawURL string) (*Credential, error) {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return nil, nil //nolint:nilerr // not an https URL git would store a credential for
+	}
+	if (u.Scheme != "https" && u.Scheme != "http") || a.home == "" {
+		return nil, nil
+	}
+	host := strings.ToLower(u.Hostname())
+
+	for _, name := range []string{".netrc", "_netrc"} {
+		p := filepath.Join(a.home, name)
+		src, err := os.ReadFile(p)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		if c := netrcEntry(string(src), host); c != nil {
+			return c, nil
+		}
+		break
+	}
+
+	src, err := os.ReadFile(filepath.Join(a.home, ".git-credentials"))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	for _, line := range strings.Split(string(src), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		stored, err := url.Parse(line)
+		if err != nil || stored.User == nil || !strings.EqualFold(stored.Hostname(), host) {
+			continue
+		}
+		if stored.Scheme != u.Scheme {
+			continue
+		}
+		if stored.Path != "" && stored.Path != "/" && !strings.HasPrefix(u.Path, stored.Path) {
+			continue
+		}
+		pw, _ := stored.User.Password()
+		return &Credential{Basic: &BasicAuth{Username: stored.User.Username(), Password: pw}}, nil
+	}
+	return nil, nil
+}
+
+// netrcEntry is the login and password for a machine in a netrc file, or
+// the default entry when the machine has none.
+func netrcEntry(src, host string) *Credential {
+	fields := strings.Fields(src)
+	entries := map[string]*BasicAuth{}
+	var cur *BasicAuth
+	for i := 0; i < len(fields); i++ {
+		switch fields[i] {
+		case "machine":
+			if i+1 < len(fields) {
+				i++
+				cur = &BasicAuth{}
+				entries[strings.ToLower(fields[i])] = cur
+			}
+		case "default":
+			cur = &BasicAuth{}
+			entries["default"] = cur
+		case "login":
+			if i+1 < len(fields) && cur != nil {
+				i++
+				cur.Username = fields[i]
+			}
+		case "password":
+			if i+1 < len(fields) && cur != nil {
+				i++
+				cur.Password = fields[i]
+			}
+		case "macdef":
+			// A macro runs to the next blank line and is not read.
+			return pick(entries, host)
+		}
+	}
+	return pick(entries, host)
+}
+
+func pick(entries map[string]*BasicAuth, host string) *Credential {
+	for _, key := range []string{host, "default"} {
+		if e, ok := entries[key]; ok && e.Username != "" {
+			return &Credential{Basic: e}
+		}
+	}
+	return nil
 }
 
 // fromHelmRepositories reads Helm's repositories.yaml (HELM_REPOSITORY_CONFIG,
