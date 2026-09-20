@@ -21,14 +21,9 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-// Git is the transport git sources are fetched with. It is go-git, in
-// process: no git binary, so the same behavior on every platform and in a
-// server image that carries none.
-//
-// Credentials come from the seam. With none, ssh uses the ssh agent
-// (SSH_AUTH_SOCK) and https goes anonymous; a laptop cloning a private
-// repository over https registers its token in ~/.netrc or
-// ~/.git-credentials, which AmbientCredentials reads.
+// Git is the transport git sources are fetched with: go-git, in process, so
+// the same behavior on every platform and in a server image with no git.
+// Without a credential, ssh uses the agent and https goes anonymous.
 type Git struct {
 	// HostKeyCallback verifies ssh hosts. Nil uses ~/.ssh/known_hosts, which
 	// a developer has and a server does not; a server supplies the keys it
