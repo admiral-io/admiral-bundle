@@ -47,7 +47,7 @@ func TestPullOCIChart(t *testing.T) {
 
 func TestPullHelmChart(t *testing.T) {
 	archive := chartArchive(t)
-	repo := helmRepo(t, "0.3.9", archive, "sha256:"+sha(archive))
+	repo := helmRepo(t, archive, "sha256:"+sha(archive))
 
 	p, err := Pull(context.Background(), Source{HelmChart: &HelmChartSource{Repository: repo.URL, Chart: "openfga", Version: "0.3.9"}}, Options{})
 	require.NoError(t, err)
