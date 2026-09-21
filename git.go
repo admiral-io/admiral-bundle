@@ -223,7 +223,7 @@ func (g *Git) auth(u *url.URL, cred *Credential) (transport.AuthMethod, error) {
 // private one refuses with a clear message.
 func (g *Git) agentAuth(u *url.URL) (transport.AuthMethod, error) {
 	if os.Getenv("SSH_AUTH_SOCK") == "" {
-		return nil, nil
+		return nil, fmt.Errorf("%w: %s", ErrNoSSHCredential, u.Hostname())
 	}
 	auth, err := gitssh.NewSSHAgentAuth(sshUser(u))
 	if err != nil {
@@ -234,6 +234,11 @@ func (g *Git) agentAuth(u *url.URL) (transport.AuthMethod, error) {
 	}
 	return auth, nil
 }
+
+// ErrNoSSHCredential is an ssh URL with nothing to present: no credential
+// fit the host and no agent is available. Left to go-git the failure is
+// about a socket, which is not what the caller got wrong.
+var ErrNoSSHCredential = errors.New("ssh needs a key and none fits the host")
 
 func sshUser(u *url.URL) string {
 	if u.User != nil && u.User.Username() != "" {
