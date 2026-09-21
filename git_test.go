@@ -69,6 +69,13 @@ func TestGitAuthFamilies(t *testing.T) {
 		&Credential{SSHKey: &SSHKey{PEM: []byte("not a key")}})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "ssh key for github.com")
+
+	// Nothing to present and no agent: the error names the host, not a
+	// socket.
+	t.Setenv("SSH_AUTH_SOCK", "")
+	_, err = tr.Clone(context.Background(), parse("ssh://git@github.com/acme/infra.git"), "", filepath.Join(t.TempDir(), "x"), nil)
+	assert.ErrorIs(t, err, ErrNoSSHCredential)
+	assert.Contains(t, err.Error(), "github.com")
 }
 
 // A root in a repository pins a sibling module at an older commit of the
