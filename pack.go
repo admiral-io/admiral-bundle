@@ -100,21 +100,29 @@ type Options struct {
 	// Off, a credential rides https or the fetch is refused; a redirect
 	// from https to http is refused either way.
 	AllowInsecureHTTP bool
-	// Dial replaces the dialer every HTTP fetch uses: the module registry,
-	// archives, chart repositories and OCI registries. DialPublic refuses
-	// loopback, private and link-local destinations after name resolution,
-	// which is what a server fetching on someone else's behalf wants. Git
-	// transports have their own network and are not covered.
+	// Dial makes every connection the pack opens: the module registry,
+	// archives, chart repositories, OCI registries, and git over http(s)
+	// and ssh. DialPublic refuses loopback, private and link-local
+	// destinations at connect time, on the resolved address, which is what
+	// a server fetching on someone else's behalf wants. Under a dialer a
+	// file:// repository is refused too, since nothing dials it.
 	Dial Dialer
 }
 
 // git is the transport: what was given, else go-git with the host's own
 // known_hosts and ssh agent.
 func (o Options) git() GitTransport {
-	if o.Git != nil {
-		return o.Git
+	if o.Git == nil {
+		return &Git{Credentials: o.Credentials, Dial: o.Dial}
 	}
-	return &Git{Credentials: o.Credentials}
+	// Dial is the egress policy for every connection the pack makes; a Git
+	// the caller built without one takes it, so the policy is set once.
+	if g, ok := o.Git.(*Git); ok && g.Dial == nil && o.Dial != nil {
+		with := *g
+		with.Dial = o.Dial
+		return &with
+	}
+	return o.Git
 }
 
 // Pack stages, closes and packs the component at root, anonymously and

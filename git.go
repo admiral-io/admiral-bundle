@@ -5,10 +5,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/config"
@@ -16,9 +21,11 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/filemode"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/plumbing/transport"
+	"github.com/go-git/go-git/v5/plumbing/transport/client"
 	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
 	gitssh "github.com/go-git/go-git/v5/plumbing/transport/ssh"
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/net/proxy"
 )
 
 // Git is the transport git sources are fetched with: go-git, in process, so
@@ -40,6 +47,10 @@ type Git struct {
 	// remote may be any host its .gitmodules names; each is looked up by its
 	// own URL here. Nil fetches submodules anonymously.
 	Credentials Credentials
+	// Dial makes every connection Clone opens, over http(s) and ssh alike,
+	// so a policy such as DialPublic applies to git the same as to the
+	// other fetchers. Nil dials directly. Options.Dial fills it in.
+	Dial Dialer
 }
 
 // maxSubmoduleDepth is how far nested submodules are followed, go-git's
@@ -57,12 +68,15 @@ func (g *Git) Clone(ctx context.Context, u *url.URL, ref, dst string, cred *Cred
 	if err != nil {
 		return "", err
 	}
+	ctx, proxy, release := g.dialing(ctx, &remote)
+	defer release()
 	repo, err := git.PlainCloneContext(ctx, dst, false, &git.CloneOptions{
 		URL:  remote.String(),
 		Auth: auth,
 		// Submodules are updated below, each with its own credential.
 		RecurseSubmodules: git.NoRecurseSubmodules,
 		Tags:              git.AllTags,
+		ProxyOptions:      proxy,
 	})
 	if err != nil {
 		return "", fmt.Errorf("clone %s: %w", remote.Redacted(), err)
@@ -239,6 +253,75 @@ func (g *Git) agentAuth(u *url.URL) (transport.AuthMethod, error) {
 // fit the host and no agent is available. Left to go-git the failure is
 // about a socket, which is not what the caller got wrong.
 var ErrNoSSHCredential = errors.New("ssh needs a key and none fits the host")
+
+// dialing routes the clone's connections through g.Dial. go-git has no
+// per-call transport, so the dialer is carried around it: for http(s) a
+// process-wide transport, installed once, reads the dialer off the
+// request context; for ssh go-git dials through a "proxy" whose URL names
+// the dialer in a registry for the duration of the clone. The returned
+// release must run when the clone is done.
+func (g *Git) dialing(ctx context.Context, u *url.URL) (context.Context, transport.ProxyOptions, func()) {
+	if g.Dial == nil {
+		return ctx, transport.ProxyOptions{}, func() {}
+	}
+	installGitHTTP.Do(func() {
+		t := githttp.NewClient(newHTTPClient(0, dialFromContext))
+		client.InstallProtocol("http", t)
+		client.InstallProtocol("https", t)
+	})
+	ctx = context.WithValue(ctx, dialKey{}, g.Dial)
+	if u.Scheme != "ssh" && u.Scheme != "git+ssh" {
+		return ctx, transport.ProxyOptions{}, func() {}
+	}
+	registerSSHDialer.Do(func() {
+		proxy.RegisterDialerType(sshDialScheme, func(u *url.URL, _ proxy.Dialer) (proxy.Dialer, error) {
+			d, ok := sshDialers.Load(u.Host)
+			if !ok {
+				return nil, fmt.Errorf("no dialer registered for %s", u.Redacted())
+			}
+			dialer, ok := d.(contextDialer)
+			if !ok {
+				return nil, fmt.Errorf("dialer registered for %s is a %T", u.Redacted(), d)
+			}
+			return dialer, nil
+		})
+	})
+	token := strconv.FormatUint(sshDialSeq.Add(1), 10)
+	sshDialers.Store(token, contextDialer(g.Dial))
+	return ctx, transport.ProxyOptions{URL: sshDialScheme + "://" + token}, func() { sshDialers.Delete(token) }
+}
+
+type dialKey struct{}
+
+var (
+	installGitHTTP    sync.Once
+	registerSSHDialer sync.Once
+	sshDialers        sync.Map
+	sshDialSeq        atomic.Uint64
+)
+
+const sshDialScheme = "admiral-bundle-dial"
+
+// dialFromContext is the http dialer go-git is installed with: the clone's
+// own Dial when one rode in on the context, a plain dial otherwise, so a
+// process that never set one is unchanged.
+func dialFromContext(ctx context.Context, network, addr string) (net.Conn, error) {
+	if d, ok := ctx.Value(dialKey{}).(Dialer); ok && d != nil {
+		return d(ctx, network, addr)
+	}
+	return (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext(ctx, network, addr)
+}
+
+// contextDialer is a Dialer as x/net/proxy wants one.
+type contextDialer Dialer
+
+func (d contextDialer) Dial(network, addr string) (net.Conn, error) {
+	return d(context.Background(), network, addr)
+}
+
+func (d contextDialer) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
+	return d(ctx, network, addr)
+}
 
 func sshUser(u *url.URL) string {
 	if u.User != nil && u.User.Username() != "" {

@@ -196,10 +196,10 @@ func pullTreeWith(ctx context.Context, src Source, f *fetcher, cleanup func()) (
 		if s.Ref != "" {
 			source += "?ref=" + url.QueryEscape(s.Ref)
 		}
-		tree, subdir, err = f.resolveRemote(ctx, source)
+		tree, subdir, err = f.resolveNetwork(ctx, source)
 		name = gitTreeName(s)
 	case src.Archive != nil:
-		tree, subdir, err = f.resolveRemote(ctx, src.Archive.URL)
+		tree, subdir, err = f.resolveNetwork(ctx, src.Archive.URL)
 		name = archiveName(src.Archive.URL)
 	}
 	if err != nil {

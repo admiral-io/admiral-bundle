@@ -168,11 +168,14 @@ Three `Options` are for a server packing a tree it did not write:
   developer's own machine.
 - `AllowInsecureHTTP`: off, a credential rides https or the fetch is refused,
   and a redirect from https to http is refused either way.
-- `Dial`: the dialer every HTTP fetch uses. `DialPublic` refuses loopback,
-  private, link-local and other non-public destinations after name
-  resolution, so an untrusted tree cannot point a fetch at a metadata
-  service or an internal host. go-git has its own network and is not covered
-  by `Dial`.
+- `Dial`: the dialer every connection uses, git over http(s) and ssh
+  included. `DialPublic` refuses loopback, private, link-local and other
+  non-public destinations at connect time, on the address actually being
+  dialed, so an untrusted tree cannot point a fetch at a metadata service
+  or an internal host, and a name that resolves differently for the check
+  and the connection gains nothing. Under a dialer a `file://` repository
+  is refused too, because nothing dials it. `Pull` never reads a directory
+  off the machine it runs on.
 
 `Git` never forwards the credential a clone was handed to that repository's
 submodules; each is looked up by its own URL through `Git.Credentials`,
