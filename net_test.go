@@ -2,6 +2,9 @@ package bundle
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/pem"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +15,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/crypto/ssh"
 )
 
 func TestRedirectDowngradeIsRefused(t *testing.T) {
@@ -64,6 +68,35 @@ func TestDialPublic(t *testing.T) {
 	dir := wrapperChart(t, srv.URL, "dependencies:\n- name: sample\n  repository: "+srv.URL+"\n  version: 0.3.9\n")
 	_, err = PackContext(context.Background(), dir, Options{Dial: DialPublic})
 	assert.ErrorIs(t, err, ErrPrivateAddress)
+
+	// And git, over both of its transports, which go-git dials itself.
+	gitRoot := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(gitRoot, "main.tf"), []byte(`module "a" { source = "git::`+srv.URL+`/infra.git" }`), 0o644))
+	_, err = PackContext(context.Background(), gitRoot, Options{Dial: DialPublic})
+	assert.ErrorIs(t, err, ErrPrivateAddress, "git over http")
+
+	_, key, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	pemKey, err := ssh.MarshalPrivateKey(key, "")
+	require.NoError(t, err)
+	g := &Git{Dial: DialPublic, HostKeyCallback: ssh.InsecureIgnoreHostKey()} //nolint:gosec // never reached: the dial is refused first
+	u, err := url.Parse("ssh://git@" + srv.Listener.Addr().String() + "/infra.git")
+	require.NoError(t, err)
+	_, err = g.Clone(context.Background(), u, "", filepath.Join(t.TempDir(), "x"), &Credential{SSHKey: &SSHKey{PEM: pem.EncodeToMemory(pemKey)}})
+	assert.ErrorIs(t, err, ErrPrivateAddress, "git over ssh")
+	_, loaded := sshDialers.Load("1")
+	assert.False(t, loaded, "the ssh dialer registration is released after the clone")
+}
+
+// A Git the caller built without a dialer takes the pack's, so the policy
+// set on Options reaches git the same as everything else.
+func TestOptionsDialReachesTheCallersGit(t *testing.T) {
+	g := &Git{}
+	got, ok := Options{Git: g, Dial: DialPublic}.git().(*Git)
+	require.True(t, ok)
+	assert.NotNil(t, got.Dial)
+	assert.Nil(t, g.Dial, "the caller's value is not written to")
+	assert.Same(t, g, Options{Git: g}.git(), "no dialer, no copy")
 }
 
 func TestDialerReplacesTheProxy(t *testing.T) {

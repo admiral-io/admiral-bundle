@@ -147,8 +147,10 @@ type fetcher struct {
 	// trees dedups by identity: registry address+version, git URL+ref,
 	// archive URL. The key is known before the fetch.
 	trees map[string]*fetched
-	// Pins, in resolution order.
+	// pins, in resolution order.
 	pins []Pin
+	// dial is the egress policy, when there is one.
+	dial Dialer
 	// n numbers scratch directories.
 	n int
 }
@@ -179,6 +181,7 @@ func newFetcher(dir string, opts Options) *fetcher {
 			Decompressors: getter.LimitedDecompressors(maxEntries, MaxUncompressed),
 		},
 		http:     newHTTPClient(5*time.Minute, opts.Dial),
+		dial:     opts.Dial,
 		creds:    opts.Credentials,
 		git:      opts.git(),
 		insecure: opts.AllowInsecureHTTP,
@@ -249,7 +252,19 @@ func (f *fetcher) resolveRegistry(ctx context.Context, call *tfconfig.ModuleCall
 	return t, subdir, nil
 }
 
+// resolveRemote fetches a module call's non-registry source. A file://
+// source is the author's own directory, bounded by Options.Boundary.
 func (f *fetcher) resolveRemote(ctx context.Context, source string) (*fetched, string, error) {
+	return f.resolveSource(ctx, source, true)
+}
+
+// resolveNetwork is resolveRemote for a source that must be on the
+// network: what a Pull names, which nobody's own directory can satisfy.
+func (f *fetcher) resolveNetwork(ctx context.Context, source string) (*fetched, string, error) {
+	return f.resolveSource(ctx, source, false)
+}
+
+func (f *fetcher) resolveSource(ctx context.Context, source string, local bool) (*fetched, string, error) {
 	base, subdir := getter.SourceDirSubdir(source)
 	subdir, err := cleanSubdir(subdir)
 	if err != nil {
@@ -259,7 +274,7 @@ func (f *fetcher) resolveRemote(ctx context.Context, source string) (*fetched, s
 	if t, ok := f.trees[key]; ok {
 		return t, subdir, nil
 	}
-	abs, t, err := f.fetch(ctx, base, true)
+	abs, t, err := f.fetch(ctx, base, local)
 	if err != nil {
 		return nil, "", fmt.Errorf("%s: %w", redactSource(source), err)
 	}
@@ -311,9 +326,13 @@ func withinBoundary(boundary, p string) error {
 	return nil
 }
 
-// ErrRegistryLocalLocation is a registry download answer naming a local
-// path, which a registry has no business doing.
-var ErrRegistryLocalLocation = errors.New("registry answered with a local path instead of a URL")
+// ErrLocalSource is a local path where only the network will do: a
+// registry's download answer, a Pull's source, or a file:// repository
+// under a dial policy.
+var ErrLocalSource = errors.New("local path where a network source is required")
+
+// ErrRegistryLocalLocation is ErrLocalSource, kept for callers that named it.
+var ErrRegistryLocalLocation = ErrLocalSource
 
 // fetch brings one go-getter address (no subdirectory) into a fresh scratch
 // directory and says what it is: the tree root, and its bundle prefix and
@@ -354,6 +373,12 @@ func (f *fetcher) fetch(ctx context.Context, source string, local bool) (string,
 
 	switch matched.(type) {
 	case *getter.GitGetter:
+		// go-git reads a file:// repository off the disk, which no dial
+		// policy sees, so a policy refuses it outright. Without one it is a
+		// developer's own repository standing in for a server.
+		if u.Scheme == "file" && f.dial != nil {
+			return "", nil, fmt.Errorf("%w: %s", ErrLocalSource, redactSource(source))
+		}
 		return f.fetchGit(ctx, source, u, dst)
 	case *getter.HttpGetter:
 		return f.fetchArchive(ctx, source, u, dst)
@@ -361,7 +386,7 @@ func (f *fetcher) fetch(ctx context.Context, source string, local bool) (string,
 		// file:// is a local directory; go-getter symlinks it unless told to
 		// copy, and a symlinked scratch tree is not ours to walk.
 		if !local {
-			return "", nil, fmt.Errorf("%w: %s", ErrRegistryLocalLocation, redactSource(source))
+			return "", nil, fmt.Errorf("%w: %s", ErrLocalSource, redactSource(source))
 		}
 		if err := withinBoundary(f.boundary, filepath.FromSlash(u.Path)); err != nil {
 			return "", nil, fmt.Errorf("%s: %w", redactSource(source), err)

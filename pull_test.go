@@ -182,3 +182,33 @@ func TestArchiveName(t *testing.T) {
 	assert.Equal(t, "infra", gitTreeName(&GitTreeSource{URL: "https://github.com/acme/infra.git"}))
 	assert.Equal(t, "infra", gitTreeName(&GitTreeSource{URL: "ssh://git@github.com/acme/infra"}))
 }
+
+// A pull names the network. A directory on the machine that runs the pull
+// is refused however it is spelled, and under a dial policy a file://
+// repository is too, since go-git reads it without dialing: the policy is
+// what stands between a server and its own disk.
+func TestPullRefusesTheLocalDisk(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.tf"), []byte(`variable "x" {}`), 0o644))
+	for _, src := range []Source{
+		{Archive: &ArchiveSource{URL: "file://" + dir}},
+		{Archive: &ArchiveSource{URL: dir}},
+	} {
+		_, err := Pull(context.Background(), src, Options{})
+		assert.ErrorIs(t, err, ErrLocalSource, src.Archive.URL)
+		_, err = Pull(context.Background(), src, Options{Dial: DialPublic})
+		assert.ErrorIs(t, err, ErrLocalSource, src.Archive.URL)
+	}
+
+	upstream, _ := gitRepo(t, map[string]string{"main.tf": `# up`})
+	_, err := Pull(context.Background(), Source{GitTree: &GitTreeSource{URL: "file://" + upstream}}, Options{Dial: DialPublic})
+	assert.ErrorIs(t, err, ErrLocalSource, "git over file:// under a policy")
+
+	// The same repository named transitively, by a module the pack closes.
+	root := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(root, "main.tf"), []byte(`module "up" { source = "git::file://`+upstream+`" }`), 0o644))
+	_, err = PackContext(context.Background(), root, Options{Dial: DialPublic})
+	assert.ErrorIs(t, err, ErrLocalSource, "a vendored git::file:// under a policy")
+	_, err = PackContext(context.Background(), root, Options{Git: testGit{}})
+	require.NoError(t, err, "and a developer's own machine has no policy")
+}
