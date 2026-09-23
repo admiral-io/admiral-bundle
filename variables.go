@@ -8,17 +8,12 @@ import (
 	"github.com/zclconf/go-cty/cty"
 )
 
-// Validation is one validation block on a Terraform variable. Both halves are
-// kept as written: evaluating a condition needs the language's functions and
-// a value, and inspection has neither.
+// Validation is one validation block on a Terraform variable, as written.
 type Validation struct {
 	Condition    string `json:"condition"`
 	ErrorMessage string `json:"error_message"`
 }
 
-// variableFacts is what a variable block says that terraform-config-inspect
-// does not report: whether it accepts null, whether it is ephemeral, and its
-// validation blocks.
 type variableFacts struct {
 	nullable    bool
 	ephemeral   bool
@@ -38,10 +33,8 @@ var (
 	}
 )
 
-// readVariableFacts parses the root module's .tf and .tf.json files a second
-// time, for the variable attributes the static walk leaves out. It reports
-// nothing it cannot read: a file that does not parse was already reported by
-// the walk, and an attribute that is not a literal is left at its default.
+// readVariableFacts reads the variable attributes terraform-config-inspect
+// does not report. Parse errors are the walk's to report.
 func readVariableFacts(files []File) map[string]variableFacts {
 	parser := hclparse.NewParser()
 	facts := map[string]variableFacts{}
@@ -71,8 +64,6 @@ func readVariableFacts(files []File) map[string]variableFacts {
 }
 
 func readVariable(body hcl.Body, src []byte) variableFacts {
-	// Terraform's defaults: a variable accepts null unless it says otherwise,
-	// and is not ephemeral unless it says so.
 	v := variableFacts{nullable: true}
 	content, _, _ := body.PartialContent(variableBody)
 	if content == nil {
@@ -108,8 +99,6 @@ func literalBool(attr *hcl.Attribute) (bool, bool) {
 	return val.True(), true
 }
 
-// stringOrSource is an error message as its reader will see it when it is a
-// plain string, and as written when it interpolates.
 func stringOrSource(attr *hcl.Attribute, src []byte) string {
 	if attr == nil {
 		return ""

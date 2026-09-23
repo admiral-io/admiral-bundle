@@ -61,21 +61,13 @@ type Input struct {
 	Description string `json:"description,omitempty"`
 	Required    bool   `json:"required"`
 	Default     any    `json:"default,omitempty"`
-	// Sensitive is set for an ephemeral input too: a value that must stay out
-	// of plan and state must not be displayed either.
-	Sensitive bool `json:"sensitive,omitempty"`
-	Ephemeral bool `json:"ephemeral,omitempty"`
-	// Nullable says whether null is an accepted value. Nil when the bundle
-	// does not say, which is a Helm chart without a schema for the input.
-	Nullable *bool `json:"nullable,omitempty"`
-	// Deprecated is the bundle's own deprecation message for the input.
-	Deprecated string `json:"deprecated,omitempty"`
-	// Validations are a Terraform variable's validation blocks, in order.
-	Validations []Validation `json:"validations,omitempty"`
-	// Schema is the JSON Schema a Helm chart's values.schema.json declares for
-	// the input, verbatim, so a consumer can validate a value the way Helm
-	// will.
-	Schema json.RawMessage `json:"schema,omitempty"`
+	Sensitive   bool   `json:"sensitive,omitempty"`
+	Ephemeral   bool   `json:"ephemeral,omitempty"`
+	// Nullable is nil when the bundle does not say.
+	Nullable    *bool           `json:"nullable,omitempty"`
+	Deprecated  string          `json:"deprecated,omitempty"`
+	Validations []Validation    `json:"validations,omitempty"`
+	Schema      json.RawMessage `json:"schema,omitempty"`
 }
 
 // Output is one value the bundle produces.
@@ -288,11 +280,8 @@ func diagPath(d tfconfig.Diagnostic) string {
 // --- Helm ------------------------------------------------------------------
 
 // inspectHelm reads Chart.yaml and infers inputs from the top level of
-// values.yaml, then lets values.schema.json say what it declares about them:
-// type, description, whether each is required, and the schema itself. The
-// schema can also declare inputs values.yaml leaves out. A chart has no
-// declared outputs. Rendering (helm template) is the closure step's job and
-// is not done here.
+// values.yaml and values.schema.json. A chart has no declared outputs.
+// Rendering (helm template) is the closure step's job and is not done here.
 func inspectHelm(files []File) (*Report, error) {
 	report := &Report{Kind: KindHelm, Findings: []Finding{}}
 	var chart struct {
@@ -347,10 +336,8 @@ func inspectHelm(files []File) (*Report, error) {
 	return report, nil
 }
 
-// applyValuesSchema folds a chart's top-level schema into the inputs
-// values.yaml produced. A schema is authoritative where it speaks: its type
-// replaces the one guessed from a default, and its required list is the only
-// source of Required a chart has.
+// applyValuesSchema folds a chart's top-level schema into the inputs from
+// values.yaml. Where the schema speaks, it wins.
 func applyValuesSchema(inputs []Input, data []byte) ([]Input, error) {
 	var schema struct {
 		Properties map[string]json.RawMessage `json:"properties"`
@@ -401,9 +388,7 @@ func applyValuesSchema(inputs []Input, data []byte) ([]Input, error) {
 	return inputs, nil
 }
 
-// schemaType maps a JSON Schema `type`, a string or a list of them, onto the
-// vocabulary yamlType uses, and reports whether null is among them. A list of
-// several non-null types keeps the first; the schema says the rest.
+// schemaType maps a JSON Schema type onto yamlType's vocabulary.
 func schemaType(t any) (name string, nullable bool, ok bool) {
 	var names []string
 	switch v := t.(type) {
