@@ -262,9 +262,10 @@ func TestInspectTerraform(t *testing.T) {
 	assert.Equal(t, KindTerraform, r.Kind)
 
 	require.Len(t, r.Contract.Inputs, 3)
-	assert.Equal(t, Input{Name: "name", Type: "string", Description: "The instance name.", Required: true}, r.Contract.Inputs[0])
-	assert.Equal(t, Input{Name: "password", Type: "string", Required: true, Sensitive: true}, r.Contract.Inputs[1])
-	assert.Equal(t, Input{Name: "tier", Type: "string", Default: "db-f1-micro"}, r.Contract.Inputs[2])
+	nullable := true // Terraform's default when a variable does not say
+	assert.Equal(t, Input{Name: "name", Type: "string", Description: "The instance name.", Required: true, Nullable: &nullable}, r.Contract.Inputs[0])
+	assert.Equal(t, Input{Name: "password", Type: "string", Required: true, Sensitive: true, Nullable: &nullable}, r.Contract.Inputs[1])
+	assert.Equal(t, Input{Name: "tier", Type: "string", Default: "db-f1-micro", Nullable: &nullable}, r.Contract.Inputs[2])
 
 	require.Len(t, r.Contract.Outputs, 2)
 	assert.Equal(t, Output{Name: "connection_name", Description: "Use this to connect."}, r.Contract.Outputs[0])
@@ -290,6 +291,125 @@ module "m" { source = var.src }
 	_, err := Inspect(files, KindTerraform)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "non-literal source")
+}
+
+// What a variable block says beyond name, type and default: whether it
+// accepts null, whether it is ephemeral, its validations and its deprecation.
+func TestInspectTerraformReadsWhatTheStaticWalkLeavesOut(t *testing.T) {
+	files := []File{{Path: "variables.tf", Data: []byte(`
+variable "region" {
+  type     = string
+  nullable = false
+
+  validation {
+    condition     = contains(["us-east1", "europe-west1"], var.region)
+    error_message = "Region must be us-east1 or europe-west1."
+  }
+  validation {
+    condition     = length(var.region) > 0
+    error_message = "Region ${var.region} is empty."
+  }
+}
+
+variable "token" {
+  type      = string
+  ephemeral = true
+}
+
+variable "legacy_tier" {
+  type       = string
+  default    = "small"
+  deprecated = "Use tier instead."
+}
+
+variable "computed" {
+  type     = string
+  nullable = var.region != ""
+}
+`)}, {Path: "more.tf.json", Data: []byte(`{"variable": {"from_json": {"type": "string", "nullable": false}}}`)}}
+
+	r, err := Inspect(files, KindTerraform)
+	require.NoError(t, err)
+	byName := map[string]Input{}
+	for _, in := range r.Contract.Inputs {
+		byName[in.Name] = in
+	}
+
+	region := byName["region"]
+	require.NotNil(t, region.Nullable)
+	assert.False(t, *region.Nullable)
+	assert.Equal(t, []Validation{
+		{Condition: `contains(["us-east1", "europe-west1"], var.region)`, ErrorMessage: "Region must be us-east1 or europe-west1."},
+		{Condition: `length(var.region) > 0`, ErrorMessage: `"Region ${var.region} is empty."`},
+	}, region.Validations, "conditions as written; a plain message as its reader sees it, an interpolated one as written")
+
+	token := byName["token"]
+	assert.True(t, token.Ephemeral)
+	assert.True(t, token.Sensitive, "an ephemeral value is never displayed either")
+
+	assert.Equal(t, "Use tier instead.", byName["legacy_tier"].Deprecated)
+
+	computed := byName["computed"]
+	require.NotNil(t, computed.Nullable)
+	assert.True(t, *computed.Nullable, "a non-literal nullable is not guessed; the default stands")
+
+	fromJSON := byName["from_json"]
+	require.NotNil(t, fromJSON.Nullable)
+	assert.False(t, *fromJSON.Nullable, ".tf.json is read too")
+}
+
+// values.schema.json is authoritative where it speaks, and can declare an
+// input values.yaml leaves out.
+func TestInspectHelmReadsTheValuesSchema(t *testing.T) {
+	files := []File{
+		{Path: "Chart.yaml", Data: []byte("apiVersion: v2\nname: api\nversion: 1.0.0\n")},
+		{Path: "values.yaml", Data: []byte("replicas: 2\ndebug: false\n")},
+		{Path: "values.schema.json", Data: []byte(`{
+  "type": "object",
+  "required": ["replicas", "hostname"],
+  "properties": {
+    "replicas": {"type": "integer", "minimum": 1, "description": "Pod count."},
+    "hostname": {"type": ["string", "null"], "format": "hostname"},
+    "legacy":   {"type": "boolean", "deprecated": true}
+  }
+}`)},
+	}
+	r, err := Inspect(files, "")
+	require.NoError(t, err)
+	byName := map[string]Input{}
+	var order []string
+	for _, in := range r.Contract.Inputs {
+		byName[in.Name] = in
+		order = append(order, in.Name)
+	}
+	assert.Equal(t, []string{"debug", "hostname", "legacy", "replicas"}, order, "sorted, schema-only inputs included")
+
+	replicas := byName["replicas"]
+	assert.True(t, replicas.Required)
+	assert.Equal(t, "number", replicas.Type)
+	assert.Equal(t, "Pod count.", replicas.Description)
+	assert.EqualValues(t, 2, replicas.Default, "the default still comes from values.yaml")
+	require.NotNil(t, replicas.Nullable)
+	assert.False(t, *replicas.Nullable)
+	assert.JSONEq(t, `{"type": "integer", "minimum": 1, "description": "Pod count."}`, string(replicas.Schema))
+
+	hostname := byName["hostname"]
+	assert.True(t, hostname.Required)
+	assert.Equal(t, "string", hostname.Type)
+	require.NotNil(t, hostname.Nullable)
+	assert.True(t, *hostname.Nullable)
+	assert.Nil(t, hostname.Default)
+
+	assert.Equal(t, "deprecated", byName["legacy"].Deprecated)
+
+	debug := byName["debug"]
+	assert.Nil(t, debug.Nullable, "no schema for it, so nothing is claimed")
+	assert.Nil(t, debug.Schema)
+	assert.False(t, debug.Required)
+
+	files[2].Data = []byte("{not json")
+	_, err = Inspect(files, "")
+	assert.ErrorContains(t, err, "values.schema.json")
 }
 
 func TestInspectHelm(t *testing.T) {
