@@ -4,8 +4,8 @@
 
 Package `bundle` turns a directory into the gzipped tar a component registry
 stores, and reads one back. It is the packaging format behind
-[Admiral](https://admiral.io)'s component registry: what
-[`admiral component publish`](https://admiral.io/docs/reference/cli) uploads
+[Admiral](https://admiral.io/?utm_source=github&utm_medium=referral&utm_campaign=admiral-bundle)'s component registry: what
+[`admiral component publish`](https://admiral.io/docs/reference/cli?utm_source=github&utm_medium=referral&utm_campaign=admiral-bundle) uploads
 and what the platform stores, inspects and deploys.
 
 A *component* is a Terraform module, a Helm chart, or a set of raw Kubernetes
@@ -191,17 +191,22 @@ empty `Provenance` and no error.
 ## Part of Admiral
 
 This module is the open-source packaging layer of
-[Admiral](https://admiral.io), a deployment platform for applications and the
-infrastructure they run on. Where it fits:
+[Admiral](https://admiral.io/?utm_source=github&utm_medium=referral&utm_campaign=admiral-bundle), a control plane for coordinating infrastructure and application delivery across environments.
+Where it fits:
 
-- [Applications & Components](https://admiral.io/docs/concepts/applications-and-components)
-  — what a component is and how it is owned per environment.
-- [Sources & Catalog](https://admiral.io/docs/concepts/sources-and-catalog)
-  — the git, Helm, OCI, HTTP and Terraform sources a bundle closes over.
-- [CLI reference](https://admiral.io/docs/reference/cli) — the `admiral`
+- [Applications & Components](https://admiral.io/docs/concepts/applications-and-components?utm_source=github&utm_medium=referral&utm_campaign=admiral-bundle),
+  what a component is and how it is owned per environment.
+- [Sources & Catalog](https://admiral.io/docs/concepts/sources-and-catalog?utm_source=github&utm_medium=referral&utm_campaign=admiral-bundle),
+  the git, Helm, OCI, HTTP and Terraform sources a bundle closes over.
+- [CLI reference](https://admiral.io/docs/reference/cli?utm_source=github&utm_medium=referral&utm_campaign=admiral-bundle), the `admiral`
   command that builds and publishes bundles, from
   [admiral-io/admiral-cli](https://github.com/admiral-io/admiral-cli).
-- [Documentation](https://admiral.io/docs) — everything else.
+- [Documentation](https://admiral.io/docs?utm_source=github&utm_medium=referral&utm_campaign=admiral-bundle), everything else.
+- A bug in this module: [open an issue](https://github.com/admiral-io/admiral-bundle/issues/new/choose).
+- Anything else about Admiral, or not sure where it goes:
+  [admiral-community](https://github.com/admiral-io/admiral-community).
+- A security vulnerability: email [security@admiral.io](mailto:security@admiral.io),
+  never a public issue.
 
 ## Development
 
