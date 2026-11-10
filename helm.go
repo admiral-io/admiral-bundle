@@ -81,9 +81,11 @@ type repoIndex struct {
 }
 
 type repoEntry struct {
-	Version string   `yaml:"version"`
-	URLs    []string `yaml:"urls"`
-	Digest  string   `yaml:"digest"`
+	Version     string    `yaml:"version"`
+	URLs        []string  `yaml:"urls"`
+	Digest      string    `yaml:"digest"`
+	Description string    `yaml:"description"`
+	Created     time.Time `yaml:"created"`
 }
 
 // helmFetcher is the network the closure step is allowed: HTTP GET against a

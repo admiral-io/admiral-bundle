@@ -116,6 +116,24 @@ type Credentials interface {
 
 A nil credential is an anonymous fetch.
 
+### Discovering what an upstream offers
+
+Before an artifact and a version are chosen, `ListArtifacts` reads what a
+catalog lists and `ListVersions` reads the versions of one artifact, with
+nothing pulled. A `Catalog` names one upstream: a Helm repository, a
+namespace in an OCI registry, a namespace in a module registry, or a git
+repository.
+
+```go
+versions, err := bundle.ListVersions(ctx, bundle.Catalog{HelmRepository: "https://charts.jetstack.io"}, "cert-manager", opts)
+```
+
+Versions come newest first: semver before anything else, then the rest by
+name. A git repository answers its tags, then its branches, each with the
+commit it points at. A Helm repository and a module registry list their
+artifacts; a container registry and a git repository do not, and answer
+`ErrNoCatalog`. The same `Credentials` and `Dial` apply as to `Pull`.
+
 ## Reading a bundle
 
 The read side runs on what arrives at a registry, and trusts nothing.
