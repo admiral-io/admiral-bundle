@@ -90,7 +90,8 @@ func TestOCICatalogListsTagsAndHasNoArtifacts(t *testing.T) {
 func TestRegistryCatalogListsANamespaceAndVersions(t *testing.T) {
 	ctx := context.Background()
 	fake := newFakeRegistry(t, []string{"1.0.0", "1.2.0", "1.1.0"}, "git::https://example.invalid/acme/net?ref=abc", "header")
-	mux := fake.srv.Config.Handler.(*http.ServeMux)
+	mux, ok := fake.srv.Config.Handler.(*http.ServeMux)
+	require.True(t, ok)
 	mux.HandleFunc("/api/modules/acme", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("offset") == "" {
 			_ = json.NewEncoder(w).Encode(map[string]any{
