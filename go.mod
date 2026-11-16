@@ -1,6 +1,6 @@
 module go.admiral.io/bundle
 
-go 1.26.10
+go 1.26.11
 
 require (
 	github.com/go-git/go-git/v5 v5.19.2
