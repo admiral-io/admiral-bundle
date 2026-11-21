@@ -1,0 +1,51 @@
+version: "2"
+
+run:
+  tests: false
+  relative-path-mode: wd
+
+linters:
+  default: none
+  enable:
+    - bodyclose
+    - contextcheck
+    - dupl
+    - errorlint
+    - exhaustive
+    - funlen
+    - gocognit
+    - gocyclo
+    - gosec
+    - maintidx
+    - nestif
+    - nilnil
+    - noctx
+    - rowserrcheck
+    - sqlclosecheck
+  settings:
+    dupl:
+      threshold: 120
+    funlen:
+      lines: -1
+      statements: 50
+      ignore-comments: true
+    gocognit:
+      min-complexity: 20
+    gocyclo:
+      min-complexity: 15
+    maintidx:
+      under: 20
+    nestif:
+      min-complexity: 5
+    exhaustive:
+      default-signifies-exhaustive: true
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
