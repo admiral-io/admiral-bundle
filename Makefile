@@ -1,3 +1,4 @@
+QUALITY_BASE ?= origin/master
 .DEFAULT_GOAL := help
 
 .PHONY: help
@@ -11,6 +12,10 @@ test: ## Run the tests.
 .PHONY: lint
 lint: ## Run golangci-lint.
 	./tools/golangci-lint.sh run --timeout 2m30s
+
+.PHONY: quality
+quality: ## Lint for complexity, size and duplication on the lines changed since QUALITY_BASE.
+	./tools/golangci-lint.sh run --config .golangci-quality.yml --new-from-rev=$(QUALITY_BASE) --timeout 5m
 
 .PHONY: lint-fix
 lint-fix: ## Run golangci-lint with --fix.
