@@ -17,10 +17,13 @@ func ExamplePack() {
 	if err != nil {
 		log.Fatal(err)
 	}
+
 	fmt.Println(packed.Kind, packed.Files, "files")
+
 	for _, v := range packed.Vendored {
 		fmt.Printf("%s: %s -> %s\n", v.Caller, v.Source, v.Into)
 	}
+
 	for _, p := range packed.Pins {
 		fmt.Printf("%s %s => %s\n", p.Source, p.Constraint, p.Resolved)
 	}
@@ -42,6 +45,7 @@ func ExamplePackContext() {
 	if err != nil {
 		log.Fatal(err)
 	}
+
 	if err := os.WriteFile("network.tgz", packed.Bytes, 0o644); err != nil {
 		log.Fatal(err)
 	}
@@ -59,14 +63,17 @@ func ExampleNormalize() {
 	if err != nil {
 		log.Fatal(err)
 	}
+
 	kind, err := bundle.Detect(n.Files)
 	if err != nil {
 		log.Fatal(err)
 	}
+
 	report, err := bundle.Inspect(n.Files, kind)
 	if err != nil {
 		log.Fatal(err)
 	}
+
 	switch kind {
 	case bundle.KindTerraform:
 		if _, err := bundle.Close(n.Files); err != nil {
@@ -79,6 +86,7 @@ func ExampleNormalize() {
 	}
 
 	fmt.Println(kind, len(report.Contract.Inputs), "inputs")
+
 	for _, f := range report.Findings {
 		fmt.Println(f.Severity, f.Code, f.Message)
 	}

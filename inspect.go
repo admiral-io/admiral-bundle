@@ -93,10 +93,12 @@ type Report struct {
 // YAML and a module may carry a values file for its own reasons.
 func Detect(files []File) (Kind, error) {
 	var tf, yamls bool
+
 	for _, f := range files {
 		if strings.Contains(f.Path, "/") {
 			continue
 		}
+
 		switch {
 		case f.Path == "Chart.yaml":
 			return KindHelm, nil
@@ -106,6 +108,7 @@ func Detect(files []File) (Kind, error) {
 			yamls = true
 		}
 	}
+
 	switch {
 	case tf:
 		return KindTerraform, nil
@@ -125,8 +128,10 @@ func Inspect(files []File, kind Kind) (*Report, error) {
 		if err != nil {
 			return nil, err
 		}
+
 		kind = detected
 	}
+
 	switch kind {
 	case KindTerraform:
 		return inspectTerraform(files)
@@ -152,6 +157,7 @@ func inspectTerraform(files []File) (*Report, error) {
 		if d.Severity == tfconfig.DiagError {
 			return nil, fmt.Errorf("terraform: %s: %s", d.Summary, d.Detail)
 		}
+
 		report.Findings = append(report.Findings, Finding{
 			Severity: SeverityLow, Source: "terraform-config-inspect",
 			Message: strings.TrimSpace(d.Summary + ". " + d.Detail), Path: diagPath(d),
@@ -159,12 +165,15 @@ func inspectTerraform(files []File) (*Report, error) {
 	}
 
 	facts := readVariableFacts(files)
+
 	for _, name := range sortedKeys(mod.Variables) {
 		v := mod.Variables[name]
+
 		f, ok := facts[name]
 		if !ok {
 			f = variableFacts{nullable: true}
 		}
+
 		in := Input{
 			Name: v.Name, Type: v.Type, Description: v.Description,
 			Required: v.Required, Sensitive: v.Sensitive || f.ephemeral,
@@ -174,8 +183,10 @@ func inspectTerraform(files []File) (*Report, error) {
 		if !v.Required {
 			in.Default = v.Default
 		}
+
 		report.Contract.Inputs = append(report.Contract.Inputs, in)
 	}
+
 	for _, name := range sortedKeys(mod.Outputs) {
 		o := mod.Outputs[name]
 		report.Contract.Outputs = append(report.Contract.Outputs,
@@ -235,6 +246,7 @@ func inspectTerraform(files []File) (*Report, error) {
 			return nil, fmt.Errorf("terraform: module %q has a non-literal source %q; a published bundle must name its sources as strings", name, call.Source)
 		}
 	}
+
 	return report, nil
 }
 
@@ -244,6 +256,7 @@ func mapFS(files []File) fstest.MapFS {
 	for _, f := range files {
 		m[f.Path] = &fstest.MapFile{Data: f.Data, Mode: fs.FileMode(f.Mode)}
 	}
+
 	return m
 }
 
@@ -261,6 +274,7 @@ func bounded(constraints []string) bool {
 			}
 		}
 	}
+
 	return false
 }
 
@@ -274,6 +288,7 @@ func diagPath(d tfconfig.Diagnostic) string {
 	if d.Pos == nil {
 		return ""
 	}
+
 	return fmt.Sprintf("%s:%d", d.Pos.Filename, d.Pos.Line)
 }
 
@@ -284,6 +299,7 @@ func diagPath(d tfconfig.Diagnostic) string {
 // Rendering (helm template) is the closure step's job and is not done here.
 func inspectHelm(files []File) (*Report, error) {
 	report := &Report{Kind: KindHelm, Findings: []Finding{}}
+
 	var chart struct {
 		Name       string `yaml:"name"`
 		Version    string `yaml:"version"`
@@ -294,6 +310,7 @@ func inspectHelm(files []File) (*Report, error) {
 			return nil, fmt.Errorf("helm: Chart.yaml: %w", err)
 		}
 	}
+
 	if chart.Name == "" {
 		return nil, errors.New("helm: Chart.yaml has no name")
 	}
@@ -303,17 +320,20 @@ func inspectHelm(files []File) (*Report, error) {
 		if err := yaml.Unmarshal(data, &values); err != nil {
 			return nil, fmt.Errorf("helm: values.yaml: %w", err)
 		}
+
 		for _, key := range sortedKeys(values) {
 			report.Contract.Inputs = append(report.Contract.Inputs, Input{
 				Name: key, Type: yamlType(values[key]), Default: values[key],
 			})
 		}
 	}
+
 	if data, ok := lookup(files, "values.schema.json"); ok {
 		inputs, err := applyValuesSchema(report.Contract.Inputs, data)
 		if err != nil {
 			return nil, fmt.Errorf("helm: values.schema.json: %w", err)
 		}
+
 		report.Contract.Inputs = inputs
 	}
 
@@ -323,6 +343,7 @@ func inspectHelm(files []File) (*Report, error) {
 		if !strings.HasPrefix(f.Path, "templates/") {
 			continue
 		}
+
 		for _, line := range strings.Split(string(f.Data), "\n") {
 			trimmed := strings.TrimSpace(line)
 			if strings.HasPrefix(trimmed, "image:") && !strings.Contains(trimmed, "{{") {
@@ -333,6 +354,7 @@ func inspectHelm(files []File) (*Report, error) {
 			}
 		}
 	}
+
 	return report, nil
 }
 
@@ -346,16 +368,20 @@ func applyValuesSchema(inputs []Input, data []byte) ([]Input, error) {
 	if err := json.Unmarshal(data, &schema); err != nil {
 		return nil, err
 	}
+
 	required := map[string]bool{}
 	for _, name := range schema.Required {
 		required[name] = true
 	}
+
 	index := map[string]int{}
 	for i, in := range inputs {
 		index[in.Name] = i
 	}
+
 	for _, name := range sortedKeys(schema.Properties) {
 		raw := schema.Properties[name]
+
 		var prop struct {
 			Type        any    `json:"type"`
 			Description string `json:"description"`
@@ -364,33 +390,41 @@ func applyValuesSchema(inputs []Input, data []byte) ([]Input, error) {
 		if err := json.Unmarshal(raw, &prop); err != nil {
 			return nil, fmt.Errorf("property %q: %w", name, err)
 		}
+
 		i, ok := index[name]
 		if !ok {
 			inputs = append(inputs, Input{Name: name})
 			i = len(inputs) - 1
 			index[name] = i
 		}
+
 		in := &inputs[i]
 		in.Schema = raw
+
 		in.Required = required[name]
 		if prop.Description != "" {
 			in.Description = prop.Description
 		}
+
 		if prop.Deprecated {
 			in.Deprecated = "deprecated"
 		}
+
 		if t, nullable, ok := schemaType(prop.Type); ok {
 			in.Type = t
 			in.Nullable = &nullable
 		}
 	}
+
 	sort.Slice(inputs, func(a, b int) bool { return inputs[a].Name < inputs[b].Name })
+
 	return inputs, nil
 }
 
 // schemaType maps a JSON Schema type onto yamlType's vocabulary.
 func schemaType(t any) (name string, nullable bool, ok bool) {
 	var names []string
+
 	switch v := t.(type) {
 	case string:
 		names = []string{v}
@@ -403,6 +437,7 @@ func schemaType(t any) (name string, nullable bool, ok bool) {
 	default:
 		return "", false, false
 	}
+
 	for _, n := range names {
 		switch n {
 		case "null":
@@ -417,9 +452,11 @@ func schemaType(t any) (name string, nullable bool, ok bool) {
 			name = firstOf(name, n)
 		}
 	}
+
 	if name == "" && nullable {
 		name = "null"
 	}
+
 	return name, nullable, len(names) > 0
 }
 
@@ -427,6 +464,7 @@ func firstOf(current, next string) string {
 	if current != "" {
 		return current
 	}
+
 	return next
 }
 
@@ -436,6 +474,7 @@ func lookup(files []File, name string) ([]byte, bool) {
 			return f.Data, true
 		}
 	}
+
 	return nil, false
 }
 
@@ -463,6 +502,8 @@ func sortedKeys[V any](m map[string]V) []string {
 	for k := range m {
 		keys = append(keys, k)
 	}
+
 	sort.Strings(keys)
+
 	return keys
 }

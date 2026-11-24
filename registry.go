@@ -68,6 +68,7 @@ func registryHost(pkg tfaddr.ModulePackage) string {
 	if pkg.Host == tfaddr.DefaultModuleRegistryHost {
 		return DefaultRegistryHost
 	}
+
 	return pkg.Host.String()
 }
 
@@ -82,16 +83,20 @@ func (r *registryClient) Versions(ctx context.Context, pkg tfaddr.ModulePackage)
 	if vs, ok := r.versions[addr]; ok {
 		return vs, nil
 	}
+
 	base, err := r.modulesBase(ctx, registryHost(pkg))
 	if err != nil {
 		return nil, err
 	}
+
 	u := base.JoinPath(pkg.ForRegistryProtocol(), "versions")
+
 	resp, err := r.get(ctx, registryHost(pkg), u)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
+
 	switch resp.StatusCode {
 	case http.StatusOK:
 	case http.StatusNotFound:
@@ -99,6 +104,7 @@ func (r *registryClient) Versions(ctx context.Context, pkg tfaddr.ModulePackage)
 	default:
 		return nil, registryError(addr, resp)
 	}
+
 	var body struct {
 		Modules []struct {
 			Versions []struct {
@@ -109,29 +115,37 @@ func (r *registryClient) Versions(ctx context.Context, pkg tfaddr.ModulePackage)
 	if err := json.NewDecoder(io.LimitReader(resp.Body, maxRegistryBody)).Decode(&body); err != nil {
 		return nil, fmt.Errorf("%s: versions: %w", addr, err)
 	}
+
 	var vs []*version.Version
+
 	for _, m := range body.Modules {
 		for _, v := range m.Versions {
 			parsed, err := version.NewVersion(v.Version)
 			if err != nil {
 				continue // a registry may list what tofu could not parse either
 			}
+
 			vs = append(vs, parsed)
 		}
 	}
+
 	sort.Sort(sort.Reverse(version.Collection(vs)))
 	r.versions[addr] = vs
+
 	return vs, nil
 }
 
 // Location asks where one version's bytes are: a go-getter address.
 func (r *registryClient) Location(ctx context.Context, pkg tfaddr.ModulePackage, v *version.Version) (string, error) {
 	addr := registryAddress(pkg)
+
 	base, err := r.modulesBase(ctx, registryHost(pkg))
 	if err != nil {
 		return "", err
 	}
+
 	u := base.JoinPath(pkg.ForRegistryProtocol(), v.Original(), "download")
+
 	resp, err := r.get(ctx, registryHost(pkg), u)
 	if err != nil {
 		return "", err
@@ -139,6 +153,7 @@ func (r *registryClient) Location(ctx context.Context, pkg tfaddr.ModulePackage,
 	defer resp.Body.Close()
 
 	var location string
+
 	switch resp.StatusCode {
 	case http.StatusNoContent:
 		location = resp.Header.Get("X-Terraform-Get")
@@ -149,23 +164,28 @@ func (r *registryClient) Location(ctx context.Context, pkg tfaddr.ModulePackage,
 		if err := json.NewDecoder(io.LimitReader(resp.Body, maxRegistryBody)).Decode(&body); err != nil {
 			return "", fmt.Errorf("%s %s: download: %w", addr, v, err)
 		}
+
 		location = body.Location
 	case http.StatusNotFound:
 		return "", fmt.Errorf("%w: %s %s", ErrRegistryNotFound, addr, v)
 	default:
 		return "", registryError(addr, resp)
 	}
+
 	if location == "" {
 		return "", fmt.Errorf("%s %s: the registry did not say where the bytes are", addr, v)
 	}
+
 	// A relative location is relative to the download URL, as tofu reads it.
 	if strings.HasPrefix(location, "/") || strings.HasPrefix(location, "./") || strings.HasPrefix(location, "../") {
 		rel, err := url.Parse(location)
 		if err != nil {
 			return "", fmt.Errorf("%s %s: download location %q: %w", addr, v, location, err)
 		}
+
 		location = u.ResolveReference(rel).String()
 	}
+
 	return location, nil
 }
 
@@ -174,35 +194,45 @@ func (r *registryClient) modulesBase(ctx context.Context, host string) (*url.URL
 	if base, ok := r.services[host]; ok {
 		return base, nil
 	}
+
 	disco := &url.URL{Scheme: "https", Host: host, Path: "/.well-known/terraform.json"}
+
 	resp, err := r.get(ctx, host, disco)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
+
 	if resp.StatusCode != http.StatusOK {
 		return nil, registryError(host, resp)
 	}
+
 	var services map[string]any
 	if err := json.NewDecoder(io.LimitReader(resp.Body, maxRegistryBody)).Decode(&services); err != nil {
 		return nil, fmt.Errorf("%s: service discovery: %w", host, err)
 	}
+
 	raw, _ := services["modules.v1"].(string)
 	if raw == "" {
 		return nil, fmt.Errorf("%s does not host a module registry (no modules.v1 in service discovery)", host)
 	}
+
 	rel, err := url.Parse(raw)
 	if err != nil {
 		return nil, fmt.Errorf("%s: service discovery: modules.v1 %q: %w", host, raw, err)
 	}
+
 	base := disco.ResolveReference(rel)
 	if base.Scheme != "https" && !r.insecure {
 		return nil, fmt.Errorf("%w: %s says its modules service is at %s", ErrInsecureHTTP, host, base.Redacted())
 	}
+
 	if !strings.HasSuffix(base.Path, "/") {
 		base.Path += "/"
 	}
+
 	r.services[host] = base
+
 	return base, nil
 }
 
@@ -213,20 +243,25 @@ func (r *registryClient) get(ctx context.Context, host string, u *url.URL) (*htt
 	if err != nil {
 		return nil, err
 	}
+
 	req.Header.Set("User-Agent", userAgent)
+
 	if r.creds != nil {
 		cred, err := r.creds.Lookup(ctx, "https://"+host+"/")
 		if err != nil {
 			return nil, err
 		}
+
 		if err := cred.authorize(req, r.insecure); err != nil {
 			return nil, err
 		}
 	}
+
 	resp, err := r.client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("registry %s: %w", u.Host, err)
 	}
+
 	return resp, nil
 }
 
@@ -234,6 +269,7 @@ func registryError(what string, resp *http.Response) error {
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 		return fmt.Errorf("%s: registry refused the request (%s); a private registry needs a token, TF_TOKEN_<host> or a credentials block in ~/.tofurc", what, resp.Status)
 	}
+
 	return fmt.Errorf("%s: registry answered %s", what, resp.Status)
 }
 
@@ -249,12 +285,15 @@ func selectVersion(versions []*version.Version, constraint string) (*version.Ver
 		if err != nil {
 			return nil, fmt.Errorf("version constraint %q: %w", constraint, err)
 		}
+
 		check = c.Check
 	}
+
 	for _, v := range versions { // newest first
 		if check(v) {
 			return v, nil
 		}
 	}
+
 	return nil, fmt.Errorf("%w: %q over %d published versions", ErrRegistryNoVersion, constraint, len(versions))
 }

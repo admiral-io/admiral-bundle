@@ -3,6 +3,7 @@ version: "2"
 linters:
   default: none
   enable:
+    - wsl_v5
     - copyloopvar
     - durationcheck
     - errcheck
@@ -20,6 +21,10 @@ linters:
     - unused
     - usetesting
   settings:
+    wsl_v5:
+      default: default
+      enable:
+        - after-block
     misspell:
       locale: US
   exclusions:

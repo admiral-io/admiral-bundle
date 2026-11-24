@@ -74,13 +74,16 @@ func Close(files []File) (*Closure, error) {
 
 	out := &Closure{}
 	seen := map[string]bool{}
+
 	queue := []string{"."}
 	for len(queue) > 0 {
 		dir := queue[0]
 		queue = queue[1:]
+
 		if seen[dir] {
 			continue
 		}
+
 		seen[dir] = true
 		out.Modules = append(out.Modules, dir)
 
@@ -90,17 +93,22 @@ func Close(files []File) (*Closure, error) {
 				return nil, fmt.Errorf("terraform: %s: %s: %s", dir, d.Summary, d.Detail)
 			}
 		}
+
 		for _, name := range sortedKeys(mod.ModuleCalls) {
 			call := mod.ModuleCalls[name]
+
 			target, err := resolveSource(dir, call.Source, dirs)
 			if err != nil {
 				return nil, fmt.Errorf("%w: module %q in %s has source %q", err, name, displayDir(dir), call.Source)
 			}
+
 			out.Calls = append(out.Calls, Call{Caller: dir, Name: name, Source: call.Source, Dir: target})
 			queue = append(queue, target)
 		}
 	}
+
 	sort.Strings(out.Modules)
+
 	return out, nil
 }
 
@@ -111,13 +119,16 @@ func resolveSource(caller, source string, dirs map[string]bool) (string, error) 
 	if !isLocalSource(source) {
 		return "", ErrSourceRemote
 	}
+
 	target := path.Join(caller, source)
 	if target == ".." || strings.HasPrefix(target, "../") {
 		return "", ErrSourceEscapes
 	}
+
 	if !dirs[target] {
 		return "", ErrSourceMissing
 	}
+
 	return target, nil
 }
 
@@ -129,11 +140,13 @@ func isLocalSource(source string) bool {
 // dirSet is every directory the tree implies, root included.
 func dirSet(files []File) map[string]bool {
 	dirs := map[string]bool{".": true}
+
 	for _, f := range files {
 		for d := path.Dir(f.Path); d != "." && d != "/"; d = path.Dir(d) {
 			dirs[d] = true
 		}
 	}
+
 	return dirs
 }
 
@@ -141,6 +154,7 @@ func displayDir(dir string) string {
 	if dir == "." {
 		return "the root module"
 	}
+
 	return dir
 }
 
@@ -161,10 +175,12 @@ func closeChartAt(files []File, prefix string) error {
 	if prefix != "" {
 		where = "helm: " + strings.TrimSuffix(prefix, "/")
 	}
+
 	data, ok := lookup(files, prefix+"Chart.yaml")
 	if !ok {
 		return errors.New(where + ": Chart.yaml is missing")
 	}
+
 	var chart struct {
 		Dependencies []struct {
 			Name       string `yaml:"name"`
@@ -175,12 +191,16 @@ func closeChartAt(files []File, prefix string) error {
 	if err := yaml.Unmarshal(data, &chart); err != nil {
 		return fmt.Errorf("%s: Chart.yaml: %w", where, err)
 	}
+
 	present := map[string]bool{}
+
 	var unpacked []string
+
 	for _, f := range files {
 		if !strings.HasPrefix(f.Path, prefix+"charts/") {
 			continue
 		}
+
 		rest := strings.TrimPrefix(f.Path, prefix+"charts/")
 		// charts/<name>-<version>.tgz, or an unpacked charts/<name>/Chart.yaml.
 		if strings.HasSuffix(rest, ".tgz") && !strings.Contains(rest, "/") {
@@ -191,16 +211,20 @@ func closeChartAt(files []File, prefix string) error {
 			unpacked = append(unpacked, name)
 		}
 	}
+
 	for _, dep := range chart.Dependencies {
 		if present[dep.Name] || present[dep.Name+"-"+dep.Version] {
 			continue
 		}
+
 		return fmt.Errorf("%w: %s: %s %s from %s; run `helm dependency build` before publishing", ErrChartDependencyMissing, where, dep.Name, dep.Version, dep.Repository)
 	}
+
 	for _, name := range unpacked {
 		if err := closeChartAt(files, prefix+"charts/"+name+"/"); err != nil {
 			return err
 		}
 	}
+
 	return nil
 }

@@ -30,7 +30,9 @@ func TestPullOCIChart(t *testing.T) {
 
 	p, err := pullOCIChart(context.Background(), &OCIChartSource{Reference: reg.repository() + "/sample", Version: "0.3.9"}, Options{})
 	require.NoError(t, err)
+
 	defer p.Cleanup()
+
 	assert.Equal(t, "sample", p.Name)
 	assert.Equal(t, "0.3.9", p.Version)
 	assert.Equal(t, p.Dir, p.Boundary, "a chart is its own tree")
@@ -51,7 +53,9 @@ func TestPullHelmChart(t *testing.T) {
 
 	p, err := Pull(context.Background(), Source{HelmChart: &HelmChartSource{Repository: repo.URL, Chart: "sample", Version: "0.3.9"}}, Options{})
 	require.NoError(t, err)
+
 	defer p.Cleanup()
+
 	assert.Equal(t, "sample", p.Name)
 	assert.Equal(t, "0.3.9", p.Version)
 	assert.Equal(t, repo.URL+"/sample", p.Provenance.URI)
@@ -74,6 +78,7 @@ func TestPullRegistryModule(t *testing.T) {
 		scratch := t.TempDir()
 		f := newFetcher(scratch, Options{Git: testGit{}})
 		fake.seed(f.registry)
+
 		return pullTreeWith(context.Background(), Source{RegistryModule: &RegistryModuleSource{Address: address, Version: version}}, f, func() {})
 	}
 
@@ -119,7 +124,9 @@ func TestPullGitTree(t *testing.T) {
 
 	p, err := Pull(context.Background(), Source{GitTree: &GitTreeSource{URL: "file://" + upstream, Ref: sha, Path: "modules/np"}}, opts)
 	require.NoError(t, err)
+
 	defer p.Cleanup()
+
 	assert.Equal(t, "np", p.Name)
 	assert.Empty(t, p.Version)
 	assert.Equal(t, "git::file://"+upstream, p.Provenance.URI)
@@ -132,7 +139,9 @@ func TestPullGitTree(t *testing.T) {
 	// The whole repository, named after it.
 	p, err = Pull(context.Background(), Source{GitTree: &GitTreeSource{URL: "file://" + upstream}}, opts)
 	require.NoError(t, err)
+
 	defer p.Cleanup()
+
 	assert.Equal(t, filepath.Base(upstream), p.Name)
 	assert.Equal(t, p.Boundary, p.Dir)
 
@@ -152,13 +161,16 @@ func TestPullArchive(t *testing.T) {
 			http.NotFound(w, r)
 			return
 		}
+
 		_, _ = w.Write(archive)
 	}))
 	t.Cleanup(srv.Close)
 
 	p, err := Pull(context.Background(), Source{Archive: &ArchiveSource{URL: srv.URL + "/archives/net-1.0.0.tar.gz"}}, Options{})
 	require.NoError(t, err)
+
 	defer p.Cleanup()
+
 	assert.Equal(t, "net-1.0.0", p.Name)
 	assert.Equal(t, srv.URL+"/archives/net-1.0.0.tar.gz", p.Provenance.URI)
 	assert.True(t, strings.HasPrefix(p.Provenance.Commit, "sha256:"))
@@ -166,6 +178,7 @@ func TestPullArchive(t *testing.T) {
 
 	dir := p.Dir
 	p.Cleanup()
+
 	_, err = os.Stat(dir)
 	assert.True(t, os.IsNotExist(err), "cleanup removes the tree")
 }
@@ -179,6 +192,7 @@ func TestArchiveName(t *testing.T) {
 	} {
 		assert.Equal(t, want, archiveName(in), in)
 	}
+
 	assert.Equal(t, "infra", gitTreeName(&GitTreeSource{URL: "https://github.com/acme/infra.git"}))
 	assert.Equal(t, "infra", gitTreeName(&GitTreeSource{URL: "ssh://git@github.com/acme/infra"}))
 }
@@ -190,6 +204,7 @@ func TestArchiveName(t *testing.T) {
 func TestPullRefusesTheLocalDisk(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.tf"), []byte(`variable "x" {}`), 0o644))
+
 	for _, src := range []Source{
 		{Archive: &ArchiveSource{URL: "file://" + dir}},
 		{Archive: &ArchiveSource{URL: dir}},

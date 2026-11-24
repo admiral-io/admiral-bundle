@@ -19,6 +19,7 @@ func names(vs []Version) []string {
 	for _, v := range vs {
 		out = append(out, v.Name)
 	}
+
 	return out
 }
 
@@ -98,8 +99,10 @@ func TestRegistryCatalogListsANamespaceAndVersions(t *testing.T) {
 				"meta":    map[string]any{"next_offset": 1},
 				"modules": []map[string]string{{"name": "net", "provider": "google", "description": "A network", "version": "1.2.0"}},
 			})
+
 			return
 		}
+
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"modules": []map[string]string{{"name": "db", "provider": "google", "version": "0.3.0"}},
 		})
@@ -138,6 +141,7 @@ func TestGitCatalogListsTagsThenBranchesWithTheirCommits(t *testing.T) {
 	wt, err := repo.Worktree()
 	require.NoError(t, err)
 	require.NoError(t, wt.Checkout(&git.CheckoutOptions{Branch: plumbing.NewBranchReferenceName("release/1.x"), Create: true}))
+
 	c := Catalog{GitRepository: "file://" + dir}
 
 	versions, err := ListVersions(ctx, c, "", Options{})

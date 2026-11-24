@@ -56,6 +56,7 @@ func TestDialPublic(t *testing.T) {
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) }))
 	t.Cleanup(srv.Close)
+
 	client := newHTTPClient(0, DialPublic)
 	_, err := client.Get(srv.URL)
 	assert.ErrorIs(t, err, ErrPrivateAddress, "loopback is not public, name or not")
@@ -79,11 +80,13 @@ func TestDialPublic(t *testing.T) {
 	require.NoError(t, err)
 	pemKey, err := ssh.MarshalPrivateKey(key, "")
 	require.NoError(t, err)
+
 	g := &Git{Dial: DialPublic, HostKeyCallback: ssh.InsecureIgnoreHostKey()} //nolint:gosec // never reached: the dial is refused first
 	u, err := url.Parse("ssh://git@" + srv.Listener.Addr().String() + "/infra.git")
 	require.NoError(t, err)
 	_, err = g.Clone(context.Background(), u, "", filepath.Join(t.TempDir(), "x"), &Credential{SSHKey: &SSHKey{PEM: pem.EncodeToMemory(pemKey)}})
 	assert.ErrorIs(t, err, ErrPrivateAddress, "git over ssh")
+
 	_, loaded := sshDialers.Load("1")
 	assert.False(t, loaded, "the ssh dialer registration is released after the clone")
 }
@@ -102,6 +105,7 @@ func TestOptionsDialReachesTheCallersGit(t *testing.T) {
 func TestDialerReplacesTheProxy(t *testing.T) {
 	t.Setenv("HTTPS_PROXY", "http://proxy.example.test:3128")
 	t.Setenv("HTTP_PROXY", "http://proxy.example.test:3128")
+
 	tr, ok := newHTTPClient(0, DialPublic).Transport.(*http.Transport)
 	require.True(t, ok)
 	assert.Nil(t, tr.Proxy, "the dialer is the egress policy")
@@ -121,6 +125,7 @@ func TestRedactSource(t *testing.T) {
 	} {
 		assert.Equal(t, want, redactSource(in), in)
 	}
+
 	u, _ := url.Parse("https://u:p@host/x?sig=1")
 	assert.Equal(t, "https://u:xxxxx@host/x", redactURL(u))
 }

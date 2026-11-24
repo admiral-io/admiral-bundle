@@ -115,13 +115,16 @@ func (o Options) git() GitTransport {
 	if o.Git == nil {
 		return &Git{Credentials: o.Credentials, Dial: o.Dial}
 	}
+
 	// Dial is the egress policy for every connection the pack makes; a Git
 	// the caller built without one takes it, so the policy is set once.
 	if g, ok := o.Git.(*Git); ok && g.Dial == nil && o.Dial != nil {
 		with := *g
 		with.Dial = o.Dial
+
 		return &with
 	}
+
 	return o.Git
 }
 
@@ -137,10 +140,12 @@ func PackContext(ctx context.Context, root string, opts Options) (*Packed, error
 	if err != nil {
 		return nil, err
 	}
+
 	info, err := os.Stat(rootAbs)
 	if err != nil {
 		return nil, err
 	}
+
 	if !info.IsDir() {
 		return nil, fmt.Errorf("%s is not a directory", root)
 	}
@@ -165,6 +170,7 @@ func PackContext(ctx context.Context, root string, opts Options) (*Packed, error
 		pins     []Pin
 		version  string
 	)
+
 	switch kind {
 	case KindTerraform:
 		scratch, err := os.MkdirTemp("", "admiral-fetch-*")
@@ -172,11 +178,14 @@ func PackContext(ctx context.Context, root string, opts Options) (*Packed, error
 			return nil, err
 		}
 		defer os.RemoveAll(scratch)
+
 		f := newFetcher(scratch, opts)
+
 		vendored, err = closeTerraform(ctx, rootAbs, stage, f)
 		if err != nil {
 			return nil, err
 		}
+
 		pins = f.pins
 	case KindHelm:
 		vendored, pins, version, err = closeHelm(ctx, rootAbs, stage, newHelmFetcher(opts))
@@ -189,6 +198,7 @@ func PackContext(ctx context.Context, root string, opts Options) (*Packed, error
 	if err != nil {
 		return nil, err
 	}
+
 	return &Packed{Kind: kind, Bytes: data, Files: count, Vendored: vendored, Pins: pins, Version: version}, nil
 }
 
@@ -199,11 +209,14 @@ func DetectDir(root string) (Kind, error) {
 	if err != nil {
 		return "", err
 	}
+
 	var tf, yamls bool
+
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
 		}
+
 		switch name := e.Name(); {
 		case name == "Chart.yaml":
 			return KindHelm, nil
@@ -213,6 +226,7 @@ func DetectDir(root string) (Kind, error) {
 			yamls = true
 		}
 	}
+
 	switch {
 	case tf:
 		return KindTerraform, nil
@@ -236,14 +250,17 @@ func closeTerraform(ctx context.Context, rootAbs, stage string, f *fetcher) ([]V
 	if err := withinBoundary(f.boundary, rootAbs); err != nil {
 		return nil, err
 	}
+
 	type module struct {
 		abs, rel string
 		tree     *fetched
 	}
+
 	placed := map[string]string{rootAbs: "."} // abs -> bundle dir
 	used := map[string]bool{".": true}
 	queue := []module{{rootAbs, ".", nil}}
 	walked := map[string]bool{} // module dirs whose own calls have been read
+
 	var out []Vendored
 
 	// place records that a directory on disk now lives in the bundle and
@@ -257,15 +274,19 @@ func closeTerraform(ctx context.Context, rootAbs, stage string, f *fetcher) ([]V
 			placed[targetAbs] = rel
 			return rel, nil
 		}
+
 		dst := filepath.Join(stage, filepath.FromSlash(targetRel))
 		if !inside(stage, dst) {
 			return "", fmt.Errorf("%w: %s at %q", ErrVendorEscapes, redactSource(source), targetRel)
 		}
+
 		if err := copyTree(targetAbs, dst, boundary, true); err != nil {
 			return "", fmt.Errorf("vendor %s: %w", redactSource(source), err)
 		}
+
 		placed[targetAbs] = targetRel
 		out = append(out, Vendored{Caller: m.rel, Source: redactSource(source), Into: targetRel})
+
 		return targetRel, nil
 	}
 
@@ -273,6 +294,7 @@ func closeTerraform(ctx context.Context, rootAbs, stage string, f *fetcher) ([]V
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
+
 		m := queue[0]
 		queue = queue[1:]
 		// A module is read once, however many calls reach it; a cycle of
@@ -280,6 +302,7 @@ func closeTerraform(ctx context.Context, rootAbs, stage string, f *fetcher) ([]V
 		if walked[m.abs] {
 			continue
 		}
+
 		walked[m.abs] = true
 
 		mod, diags := tfconfig.LoadModule(m.abs)
@@ -298,6 +321,7 @@ func closeTerraform(ctx context.Context, rootAbs, stage string, f *fetcher) ([]V
 				tree                 = m.tree
 				err                  error
 			)
+
 			kind, _ := classify(call.Source)
 			switch kind {
 			case sourceLocal:
@@ -307,9 +331,11 @@ func closeTerraform(ctx context.Context, rootAbs, stage string, f *fetcher) ([]V
 				if m.tree != nil && !inside(m.tree.abs, targetAbs) {
 					return nil, fmt.Errorf("%w: %s has source %q", ErrFetchedEscapes, where, call.Source)
 				}
+
 				if info, err := os.Stat(targetAbs); err != nil || !info.IsDir() {
 					return nil, fmt.Errorf("%w: %s has source %q", ErrSourceDirMissing, where, call.Source)
 				}
+
 				// Lexically inside is not enough: a link on the way may
 				// point out of the tree.
 				if m.tree != nil {
@@ -317,12 +343,14 @@ func closeTerraform(ctx context.Context, rootAbs, stage string, f *fetcher) ([]V
 						return nil, fmt.Errorf("%w: %s has source %q", err, where, call.Source)
 					}
 				}
+
 				rel, known := placed[targetAbs]
 				switch {
 				case known:
 					targetRel = rel
 				case m.tree != nil:
 					r, _ := filepath.Rel(m.tree.abs, targetAbs)
+
 					targetRel = path.Join(m.tree.prefix, filepath.ToSlash(r))
 					if targetRel, err = place(m, call.Source, targetAbs, targetRel, m.tree.abs); err != nil {
 						return nil, err
@@ -337,6 +365,7 @@ func closeTerraform(ctx context.Context, rootAbs, stage string, f *fetcher) ([]V
 					if err := withinBoundary(f.boundary, targetAbs); err != nil {
 						return nil, fmt.Errorf("%w: %s has source %q", err, where, call.Source)
 					}
+
 					// A vendor path is picked only when a placed ancestor
 					// has not already decided where this directory lives.
 					if rel, ok := placedUnder(placed, targetAbs); ok {
@@ -344,6 +373,7 @@ func closeTerraform(ctx context.Context, rootAbs, stage string, f *fetcher) ([]V
 					} else {
 						targetRel = vendorPath(rootAbs, targetAbs, stage, used)
 					}
+
 					if targetRel, err = place(m, call.Source, targetAbs, targetRel, targetAbs); err != nil {
 						return nil, err
 					}
@@ -353,21 +383,27 @@ func closeTerraform(ctx context.Context, rootAbs, stage string, f *fetcher) ([]V
 			case sourceUnsupported:
 				return nil, fmt.Errorf("%w: %s has source %q", ErrSourceUnsupported, where, call.Source)
 			default:
-				var t *fetched
-				var subdir string
+				var (
+					t      *fetched
+					subdir string
+				)
 				if t, subdir, err = f.resolve(ctx, call); err != nil {
 					return nil, fmt.Errorf("%s: %w", where, err)
 				}
+
 				tree = t
+
 				targetAbs = filepath.Join(t.abs, filepath.FromSlash(subdir))
 				if info, err := os.Stat(targetAbs); err != nil || !info.IsDir() {
 					return nil, fmt.Errorf("%w: %s has source %q (%s)", ErrSubdirMissing, where, call.Source, subdir)
 				}
+
 				// The subdir was cleaned before the fetch; what remains is a
 				// link on the way to it pointing out of the tree.
 				if err := resolvesInside(t.abs, targetAbs); err != nil {
 					return nil, fmt.Errorf("%w: %s has source %q (%s)", err, where, call.Source, subdir)
 				}
+
 				rel, known := placed[targetAbs]
 				if known {
 					targetRel = rel
@@ -388,9 +424,11 @@ func closeTerraform(ctx context.Context, rootAbs, stage string, f *fetcher) ([]V
 					return nil, err
 				}
 			}
+
 			queue = append(queue, module{targetAbs, targetRel, tree})
 		}
 	}
+
 	return out, nil
 }
 
@@ -403,10 +441,13 @@ func placedUnder(placed map[string]string, targetAbs string) (string, bool) {
 			best, bestRel = abs, rel
 		}
 	}
+
 	if best == "" {
 		return "", false
 	}
+
 	r, _ := filepath.Rel(best, targetAbs)
+
 	return path.Join(bestRel, filepath.ToSlash(r)), true
 }
 
@@ -420,29 +461,39 @@ func vendorPath(rootAbs, targetAbs, stage string, used map[string]bool) string {
 	if err != nil {
 		rel = filepath.Base(targetAbs)
 	}
+
 	parts := strings.Split(filepath.ToSlash(rel), "/")
+
 	var keep []string
+
 	for _, p := range parts {
 		if p != ".." && p != "." && p != "" {
 			keep = append(keep, p)
 		}
 	}
+
 	if len(keep) == 0 {
 		keep = []string{filepath.Base(targetAbs)}
 	}
+
 	base := path.Join(vendorDir, path.Join(keep...))
 	candidate := base
+
 	taken := func(c string) bool {
 		if used[c] {
 			return true
 		}
+
 		_, err := os.Stat(filepath.Join(stage, filepath.FromSlash(c)))
+
 		return err == nil
 	}
 	for i := 2; taken(candidate); i++ {
 		candidate = fmt.Sprintf("%s-%d", base, i)
 	}
+
 	used[candidate] = true
+
 	return candidate
 }
 
@@ -453,10 +504,12 @@ func relativeSource(from, to string) string {
 	if err != nil {
 		return "./" + to
 	}
+
 	rel = filepath.ToSlash(rel)
 	if !strings.HasPrefix(rel, "../") && rel != ".." {
 		rel = "./" + rel
 	}
+
 	return rel
 }
 
@@ -476,25 +529,33 @@ func rewriteSource(file, moduleName, source string) error {
 		// the author committed anyway.
 		return fmt.Errorf("%w: module %q in %s; JSON module calls are read but cannot be rewritten, declare it in HCL", ErrSourceUnsupported, moduleName, filepath.Base(file))
 	}
+
 	src, err := os.ReadFile(file)
 	if err != nil {
 		return err
 	}
+
 	f, diags := hclwrite.ParseConfig(src, file, hcl.InitialPos)
 	if diags.HasErrors() {
 		return fmt.Errorf("parse %s: %s", file, diags.Error())
 	}
+
 	var found bool
+
 	for _, block := range f.Body().Blocks() {
 		if block.Type() != "module" || len(block.Labels()) != 1 || block.Labels()[0] != moduleName {
 			continue
 		}
+
 		block.Body().SetAttributeValue("source", cty.StringVal(source))
+
 		found = true
 	}
+
 	if !found {
 		return fmt.Errorf("module %q not found in %s", moduleName, file)
 	}
+
 	return os.WriteFile(file, f.Bytes(), 0o644)
 }
 
@@ -514,13 +575,16 @@ func resolvesInside(root, p string) error {
 	if err != nil {
 		return err
 	}
+
 	realP, err := filepath.EvalSymlinks(p)
 	if err != nil {
 		return err
 	}
+
 	if !inside(realRoot, realP) {
 		return ErrFetchedEscapes
 	}
+
 	return nil
 }
 
@@ -544,7 +608,9 @@ func copyTree(src, dst, boundary string, vendored bool) error {
 	if err != nil {
 		return err
 	}
+
 	c := &copier{boundary: realBoundary, vendored: vendored, active: map[string]bool{}}
+
 	return c.dir(src, dst)
 }
 
@@ -562,30 +628,37 @@ func (c *copier) dir(src, dst string) error {
 	if err != nil {
 		return err
 	}
+
 	if !inside(c.boundary, realSrc) {
 		return fmt.Errorf("%w: %s -> %s", ErrLinkEscapes, src, realSrc)
 	}
+
 	if c.active[realSrc] {
 		return fmt.Errorf("symlink cycle: %s -> %s", src, realSrc)
 	}
+
 	c.active[realSrc] = true
 	defer delete(c.active, realSrc)
 
 	if err := os.MkdirAll(dst, 0o755); err != nil {
 		return err
 	}
+
 	entries, err := os.ReadDir(src)
 	if err != nil {
 		return err
 	}
+
 	for _, e := range entries {
 		p := filepath.Join(src, e.Name())
+
 		target := filepath.Join(dst, e.Name())
 		switch {
 		case e.IsDir():
 			if ignored(e.Name()) {
 				continue
 			}
+
 			if err := c.dir(p, target); err != nil {
 				return err
 			}
@@ -594,18 +667,22 @@ func (c *copier) dir(src, dst string) error {
 			if err != nil {
 				return fmt.Errorf("symlink %s: %w", p, err)
 			}
+
 			if !inside(c.boundary, realTarget) {
 				return fmt.Errorf("%w: %s -> %s", ErrLinkEscapes, p, realTarget)
 			}
+
 			info, err := os.Stat(realTarget)
 			if err != nil {
 				return err
 			}
+
 			switch {
 			case info.IsDir():
 				if ignored(e.Name()) {
 					continue
 				}
+
 				if err := c.dir(p, target); err != nil {
 					return err
 				}
@@ -613,6 +690,7 @@ func (c *copier) dir(src, dst string) error {
 				if c.vendored && e.Name() == ".terraform.lock.hcl" {
 					continue
 				}
+
 				if err := copyFile(realTarget, target, fileMode(info)); err != nil {
 					return err
 				}
@@ -621,15 +699,18 @@ func (c *copier) dir(src, dst string) error {
 			if c.vendored && e.Name() == ".terraform.lock.hcl" {
 				continue
 			}
+
 			info, err := e.Info()
 			if err != nil {
 				return err
 			}
+
 			if err := copyFile(p, target, fileMode(info)); err != nil {
 				return err
 			}
 		}
 	}
+
 	return nil
 }
 
@@ -638,6 +719,7 @@ func fileMode(info fs.FileInfo) os.FileMode {
 	if info.Mode()&0o111 != 0 {
 		return 0o755
 	}
+
 	return 0o644
 }
 
@@ -647,18 +729,22 @@ func copyFile(src, dst string, mode os.FileMode) error {
 		return err
 	}
 	defer in.Close()
+
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return err
 	}
+
 	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
 	if err != nil {
 		return err
 	}
+
 	if _, err := io.Copy(out, in); err != nil {
 		// A write error and a close error can both carry the reason; keep
 		// both rather than let the second hide the first.
 		return errors.Join(err, out.Close())
 	}
+
 	return out.Close()
 }
 
@@ -667,23 +753,28 @@ func copyFile(src, dst string, mode os.FileMode) error {
 // be a faithful tar.
 func packTree(stage string) ([]byte, int, error) {
 	var buf bytes.Buffer
+
 	gz := gzip.NewWriter(&buf)
 	tw := tar.NewWriter(gz)
 	count := 0
 
 	var paths []string
+
 	err := filepath.WalkDir(stage, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
+
 		if !d.IsDir() {
 			paths = append(paths, p)
 		}
+
 		return nil
 	})
 	if err != nil {
 		return nil, 0, err
 	}
+
 	sort.Strings(paths)
 
 	for _, p := range paths {
@@ -694,9 +785,11 @@ func packTree(stage string) ([]byte, int, error) {
 		if err != nil {
 			return nil, 0, err
 		}
+
 		if !info.Mode().IsRegular() {
 			return nil, 0, fmt.Errorf("%w: %s", ErrEntryKind, name)
 		}
+
 		hdr := &tar.Header{
 			Name: name, ModTime: time.Time{}, Format: tar.FormatPAX,
 			Typeflag: tar.TypeReg, Size: info.Size(), Mode: int64(info.Mode().Perm()),
@@ -704,22 +797,29 @@ func packTree(stage string) ([]byte, int, error) {
 		if err := tw.WriteHeader(hdr); err != nil {
 			return nil, 0, err
 		}
+
 		f, err := os.Open(p)
 		if err != nil {
 			return nil, 0, err
 		}
+
 		_, err = io.Copy(tw, f)
 		f.Close()
+
 		if err != nil {
 			return nil, 0, err
 		}
+
 		count++
 	}
+
 	if err := tw.Close(); err != nil {
 		return nil, 0, err
 	}
+
 	if err := gz.Close(); err != nil {
 		return nil, 0, err
 	}
+
 	return buf.Bytes(), count, nil
 }

@@ -42,25 +42,32 @@ variable "name" { type = string }
 	write("infra/cloud-sql/.git/HEAD", "ref")
 	write("modules/net/main.tf", `module "sub" { source = "../sub" }`+"\n"+`variable "cidr" {}`)
 	write("modules/sub/main.tf", `output "x" { value = 1 }`)
+
 	return filepath.Join(base, "infra", "cloud-sql")
 }
 
 func entries(t *testing.T, data []byte) map[string]string {
 	t.Helper()
+
 	gz, err := gzip.NewReader(bytes.NewReader(data))
 	require.NoError(t, err)
+
 	tr := tar.NewReader(gz)
 	out := map[string]string{}
+
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
 			break
 		}
+
 		require.NoError(t, err)
 		b, err := io.ReadAll(tr)
 		require.NoError(t, err)
+
 		out[hdr.Name] = string(b)
 	}
+
 	return out
 }
 
@@ -108,14 +115,17 @@ func TestPackRefusesWhatItCannotClose(t *testing.T) {
 	}
 
 	write(`module "m" { source = "s3::https://s3.amazonaws.com/bucket/mod.zip" }`)
+
 	_, err := Pack(root)
 	assert.ErrorIs(t, err, ErrSourceUnsupported)
 
 	write(`module "m" { source = "../nope" }`)
+
 	_, err = Pack(root)
 	assert.ErrorIs(t, err, ErrSourceDirMissing)
 
 	write(`variable "s" { type = string }` + "\n" + `module "m" { source = var.s }`)
+
 	_, err = Pack(root)
 	assert.ErrorIs(t, err, ErrSourceNonLiteral)
 
@@ -143,6 +153,7 @@ func keys(m map[string]string) []string {
 	for k := range m {
 		out = append(out, k)
 	}
+
 	return out
 }
 
@@ -179,8 +190,11 @@ func TestPackEndsOnACycle(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "a"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(root, "main.tf"), []byte(`module "a" { source = "./a" }`), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(root, "a", "main.tf"), []byte(`module "up" { source = "../" }`), 0o644))
+
 	done := make(chan error, 1)
+
 	go func() { _, err := Pack(root); done <- err }()
+
 	select {
 	case err := <-done:
 		require.NoError(t, err, "a cycle is the runtime's problem, not a hang")
@@ -190,6 +204,7 @@ func TestPackEndsOnACycle(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
+
 	_, err := PackContext(ctx, root, Options{})
 	assert.ErrorIs(t, err, context.Canceled)
 }
@@ -215,12 +230,14 @@ func TestPackedTreeHasOnlyRegularFiles(t *testing.T) {
 	require.NoError(t, err)
 	gz, err := gzip.NewReader(bytes.NewReader(p.Bytes))
 	require.NoError(t, err)
+
 	tr := tar.NewReader(gz)
 	for {
 		hdr, err := tr.Next()
 		if err != nil {
 			break
 		}
+
 		assert.Equal(t, byte(tar.TypeReg), hdr.Typeflag, hdr.Name)
 	}
 }
@@ -248,6 +265,7 @@ func TestPackRefusesALinkOutOfAFetchedTree(t *testing.T) {
 		root := t.TempDir()
 		require.NoError(t, os.WriteFile(filepath.Join(root, "main.tf"), []byte(`module "x" { source = "file::`+tree+source+`" }`), 0o644))
 		_, err := PackContext(context.Background(), root, Options{})
+
 		return err
 	}
 	assert.ErrorIs(t, pack("//esc/inner"), ErrFetchedEscapes, "the subdir is reached through the link")
@@ -287,12 +305,14 @@ func TestPackDereferencesLinksThatStayInside(t *testing.T) {
 
 	gz, err := gzip.NewReader(bytes.NewReader(p.Bytes))
 	require.NoError(t, err)
+
 	tr := tar.NewReader(gz)
 	for {
 		hdr, err := tr.Next()
 		if err != nil {
 			break
 		}
+
 		assert.NotEqual(t, byte(tar.TypeSymlink), hdr.Typeflag, "%s: the bundle carries no links", hdr.Name)
 	}
 
@@ -335,6 +355,7 @@ func TestBoundaryBoundsLocalSources(t *testing.T) {
 	}
 	write("roots/x/main.tf", `module "net" { source = "../../modules/net" }`)
 	write("modules/net/main.tf", ``)
+
 	root := filepath.Join(repo, "roots", "x")
 
 	p, err := PackContext(context.Background(), root, Options{Boundary: repo})
@@ -352,11 +373,13 @@ func TestBoundaryBoundsLocalSources(t *testing.T) {
 	// A link inside the boundary pointing out of it is the same escape.
 	require.NoError(t, os.Symlink(outside, filepath.Join(repo, "modules", "esc")))
 	write("roots/z/main.tf", `module "esc" { source = "../../modules/esc" }`)
+
 	_, err = PackContext(context.Background(), filepath.Join(repo, "roots", "z"), Options{Boundary: repo})
 	assert.ErrorIs(t, err, ErrOutsideBoundary)
 
 	// file:: sources and file:// chart dependencies are local sources too.
 	write("roots/f/main.tf", `module "out" { source = "file::`+outside+`" }`)
+
 	_, err = PackContext(context.Background(), filepath.Join(repo, "roots", "f"), Options{Boundary: repo})
 	assert.ErrorIs(t, err, ErrOutsideBoundary)
 
@@ -370,8 +393,10 @@ func TestBoundaryBoundsLocalSources(t *testing.T) {
 
 func relPath(t *testing.T, from, to string) string {
 	t.Helper()
+
 	rel, err := filepath.Rel(from, to)
 	require.NoError(t, err)
+
 	return filepath.ToSlash(rel)
 }
 

@@ -52,6 +52,7 @@ func newHTTPClient(timeout time.Duration, dial Dialer) *http.Client {
 	} else {
 		transport.DialContext = (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext
 	}
+
 	return &http.Client{
 		Timeout:   timeout,
 		Transport: transport,
@@ -59,9 +60,11 @@ func newHTTPClient(timeout time.Duration, dial Dialer) *http.Client {
 			if len(via) >= 10 {
 				return errors.New("stopped after 10 redirects")
 			}
+
 			if via[0].URL.Scheme == "https" && req.URL.Scheme != "https" {
 				return fmt.Errorf("%w: %s -> %s", ErrRedirectDowngrade, via[0].URL.Redacted(), req.URL.Redacted())
 			}
+
 			return nil
 		},
 	}
@@ -80,13 +83,16 @@ func DialPublic(ctx context.Context, network, addr string) (net.Conn, error) {
 			if err != nil {
 				return err
 			}
+
 			ip := net.ParseIP(host)
 			if ip == nil || !isPublic(ip) {
 				return fmt.Errorf("%w: %s", ErrPrivateAddress, address)
 			}
+
 			return nil
 		},
 	}
+
 	return d.DialContext(ctx, network, addr)
 }
 
@@ -100,17 +106,21 @@ func isPublic(ip net.IP) bool {
 		ip.IsMulticast() || ip.IsUnspecified() || ip.IsInterfaceLocalMulticast() {
 		return false
 	}
+
 	if v4 := embeddedIPv4(ip); v4 != nil && !isPublic(v4) {
 		return false
 	}
+
 	if v4 := ip.To4(); v4 != nil {
 		if v4[0] == 100 && v4[1]&0xc0 == 64 { // 100.64.0.0/10
 			return false
 		}
+
 		if v4[0] == 0 || v4[0] >= 240 { // 0.0.0.0/8, 240.0.0.0/4 and broadcast
 			return false
 		}
 	}
+
 	return true
 }
 
@@ -122,12 +132,14 @@ func embeddedIPv4(ip net.IP) net.IP {
 	if ip.To4() != nil || len(ip) != net.IPv6len {
 		return nil
 	}
+
 	switch {
 	case bytes.HasPrefix(ip, []byte{0, 0x64, 0xff, 0x9b, 0, 0, 0, 0, 0, 0, 0, 0}):
 		return net.IPv4(ip[12], ip[13], ip[14], ip[15])
 	case ip[0] == 0x20 && ip[1] == 0x02:
 		return net.IPv4(ip[2], ip[3], ip[4], ip[5])
 	}
+
 	return nil
 }
 
@@ -138,15 +150,18 @@ func embeddedIPv4(ip net.IP) net.IP {
 // pin needs to be read back.
 func redactSource(source string) string {
 	forced, rest := forcedGetter(source)
+
 	rest, _, _ = strings.Cut(rest, "?")
 	if u, err := url.Parse(rest); err == nil && u.User != nil {
 		if _, has := u.User.Password(); has {
 			rest = u.Redacted()
 		}
 	}
+
 	if forced != "" {
 		return forced + "::" + rest
 	}
+
 	return rest
 }
 
@@ -155,6 +170,7 @@ func redactURL(u *url.URL) string {
 	c := *u
 	c.RawQuery = ""
 	c.ForceQuery = false
+
 	return c.Redacted()
 }
 
