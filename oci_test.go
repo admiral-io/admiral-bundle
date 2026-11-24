@@ -34,6 +34,7 @@ type fakeOCI struct {
 
 func newFakeOCI(t *testing.T, name, tag string, layer []byte, layerType string, auth *BasicAuth) *fakeOCI {
 	t.Helper()
+
 	f := &fakeOCI{name: name, tag: tag, layer: layer, layerType: layerType, auth: auth}
 	digest := func(b []byte) string {
 		sum := sha256.Sum256(b)
@@ -54,6 +55,7 @@ func newFakeOCI(t *testing.T, name, tag string, layer []byte, layerType string, 
 			http.Error(w, "bad credentials", http.StatusUnauthorized)
 			return
 		}
+
 		f.tokens++
 		_, _ = w.Write([]byte(`{"token":"t0k"}`))
 	})
@@ -61,8 +63,10 @@ func newFakeOCI(t *testing.T, name, tag string, layer []byte, layerType string, 
 		if f.auth != nil && r.Header.Get("Authorization") != "Bearer t0k" {
 			w.Header().Set("WWW-Authenticate", fmt.Sprintf(`Bearer realm="%s/token",service="fake",scope="repository:%s:pull"`, f.srv.URL, name))
 			w.WriteHeader(http.StatusUnauthorized)
+
 			return
 		}
+
 		switch {
 		case r.URL.Path == "/v2/":
 			w.WriteHeader(http.StatusOK)
@@ -75,6 +79,7 @@ func newFakeOCI(t *testing.T, name, tag string, layer []byte, layerType string, 
 				http.NotFound(w, r)
 				return
 			}
+
 			_, _ = w.Write(layer)
 		default:
 			http.NotFound(w, r)
@@ -82,6 +87,7 @@ func newFakeOCI(t *testing.T, name, tag string, layer []byte, layerType string, 
 	})
 	f.srv = httptest.NewServer(mux)
 	t.Cleanup(f.srv.Close)
+
 	return f
 }
 

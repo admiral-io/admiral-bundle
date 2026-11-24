@@ -32,16 +32,19 @@ func TestGitClonesAtTagBranchAndSha(t *testing.T) {
 		require.NoError(t, err, ref)
 		b, err := os.ReadFile(filepath.Join(dst, "main.tf"))
 		require.NoError(t, err)
+
 		return sha, string(b)
 	}
 	sha, content := clone("")
 	assert.Equal(t, first, sha, "default branch")
 	assert.Equal(t, "# v1", content)
+
 	sha, _ = clone("v1.0.0")
 	assert.Equal(t, first, sha, "a tag")
 	sha, content = clone("feature")
 	assert.Equal(t, second, sha, "a branch that is not the default")
 	assert.Equal(t, "# feature", content)
+
 	sha, _ = clone(second)
 	assert.Equal(t, second, sha, "a sha")
 	sha, _ = clone(second[:8])
@@ -57,6 +60,7 @@ func TestGitAuthFamilies(t *testing.T) {
 	parse := func(s string) *url.URL {
 		u, err := url.Parse(s)
 		require.NoError(t, err)
+
 		return u
 	}
 	_, err := tr.Clone(context.Background(), parse("ssh://git@github.com/acme/infra.git"), "", filepath.Join(t.TempDir(), "x"),
@@ -88,7 +92,9 @@ func TestSameRepositoryPinReadsTheObjectStore(t *testing.T) {
 	})
 	repo := openRepo(t, repoDir)
 	addRemote(t, repo, "origin", "git@github.com:acme/infra.git")
+
 	root := filepath.Join(repoDir, "projects/x")
+
 	commitFiles(t, repo, map[string]string{
 		"modules/metadata/main.tf": `# metadata v2`,
 		"projects/x/main.tf":       `module "np" { source = "git::ssh://git@github.com/acme/infra.git//modules/np?ref=` + first + `" }`,
@@ -100,6 +106,7 @@ func TestSameRepositoryPinReadsTheObjectStore(t *testing.T) {
 
 	p, err := PackContext(context.Background(), root, Options{Git: &Git{Repo: local}})
 	require.NoError(t, err)
+
 	prefix := "vendor/github.com/acme/infra/" + first[:12]
 	assert.Equal(t, []Vendored{
 		{Caller: ".", Source: "git::ssh://git@github.com/acme/infra.git//modules/np", Into: prefix + "/modules/np"},
@@ -124,6 +131,7 @@ func TestSameRepositoryPinFetchesWhatIsMissing(t *testing.T) {
 	sha, err := local.Archive(context.Background(), second, dst)
 	require.NoError(t, err)
 	assert.Equal(t, second, sha)
+
 	b, err := os.ReadFile(filepath.Join(dst, "modules/a/main.tf"))
 	require.NoError(t, err)
 	assert.Equal(t, "# a2", string(b))
@@ -152,8 +160,10 @@ func TestSubmodulesGetTheirOwnCredential(t *testing.T) {
 	if err != nil {
 		t.Skip("no git binary to author a submodule fixture with")
 	}
+
 	run := func(dir string, args ...string) {
 		t.Helper()
+
 		cmd := exec.Command(gitBin, append([]string{"-c", "commit.gpgsign=false", "-c", "protocol.file.allow=always", "-C", dir}, args...)...)
 		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
 		out, err := cmd.CombinedOutput()

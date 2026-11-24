@@ -46,6 +46,7 @@ func newOCIClient(opts Options) *ociClient {
 	if store, err := credentials.NewStoreFromDocker(credentials.StoreOptions{}); err == nil {
 		c.docker = store
 	}
+
 	return c
 }
 
@@ -55,6 +56,7 @@ func ociReference(repository string) (string, error) {
 	if ref == "" || !strings.Contains(ref, "/") {
 		return "", fmt.Errorf("%q is not an OCI repository (want oci://host/path)", repository)
 	}
+
 	return ref, nil
 }
 
@@ -65,16 +67,19 @@ func (c *ociClient) repository(ref string) (*remote.Repository, error) {
 	if err != nil {
 		return nil, fmt.Errorf("oci://%s: %w", ref, err)
 	}
+
 	client := &auth.Client{
 		Client:     c.http,
 		Cache:      c.cache,
 		Credential: c.credentialFor(ref),
 	}
 	client.SetUserAgent(userAgent)
+
 	repo.Client = client
 	if strings.HasPrefix(ref, "localhost:") || strings.HasPrefix(ref, "127.0.0.1:") {
 		repo.PlainHTTP = true
 	}
+
 	return repo, nil
 }
 
@@ -87,6 +92,7 @@ func (c *ociClient) credentialFor(ref string) auth.CredentialFunc {
 			if err != nil {
 				return auth.EmptyCredential, err
 			}
+
 			switch {
 			case cred == nil:
 			case cred.SSHKey != nil:
@@ -97,13 +103,16 @@ func (c *ociClient) credentialFor(ref string) auth.CredentialFunc {
 				return auth.Credential{AccessToken: cred.Token}, nil
 			}
 		}
+
 		if c.docker != nil {
 			// docker's store keys Docker Hub by its legacy name.
 			if host == "registry-1.docker.io" || host == "docker.io" {
 				host = "https://index.docker.io/v1/"
 			}
+
 			return c.docker.Get(ctx, host)
 		}
+
 		return auth.EmptyCredential, nil
 	}
 }
@@ -115,42 +124,53 @@ func (c *ociClient) pullChart(ctx context.Context, repository, name, version str
 	if err != nil {
 		return nil, "", err
 	}
+
 	ref := base + "/" + name
+
 	repo, err := c.repository(ref)
 	if err != nil {
 		return nil, "", err
 	}
+
 	desc, manifest, err := repo.FetchReference(ctx, version)
 	if err != nil {
 		return nil, "", fmt.Errorf("oci://%s:%s: %w", ref, version, err)
 	}
 	defer manifest.Close()
+
 	body, err := content.ReadAll(manifest, desc)
 	if err != nil {
 		return nil, "", fmt.Errorf("oci://%s:%s: manifest: %w", ref, version, err)
 	}
+
 	var m ocispec.Manifest
 	if err := json.Unmarshal(body, &m); err != nil {
 		return nil, "", fmt.Errorf("oci://%s:%s: manifest: %w", ref, version, err)
 	}
+
 	var layer *ocispec.Descriptor
+
 	for i := range m.Layers {
 		if m.Layers[i].MediaType == helmChartLayer {
 			layer = &m.Layers[i]
 			break
 		}
 	}
+
 	if layer == nil {
 		return nil, "", fmt.Errorf("%w: oci://%s:%s has no %s layer", ErrOCINotAChart, ref, version, helmChartLayer)
 	}
+
 	if layer.Size > maxChartBytes {
 		return nil, "", fmt.Errorf("oci://%s:%s: chart layer is %d bytes, over %d", ref, version, layer.Size, maxChartBytes)
 	}
+
 	// FetchAll verifies the layer's size and digest against the descriptor.
 	data, err := content.FetchAll(ctx, repo.Blobs(), *layer)
 	if err != nil {
 		return nil, "", fmt.Errorf("oci://%s:%s: chart layer: %w", ref, version, err)
 	}
+
 	return data, desc.Digest.String(), nil
 }
 
@@ -181,15 +201,19 @@ func ParseOCIChartReference(reference string) (repository, name, tag string, err
 	if !strings.HasPrefix(reference, "oci://") {
 		return "", "", "", fmt.Errorf("%q is not an OCI reference (want oci://host/path/name:version)", reference)
 	}
+
 	rest := strings.TrimPrefix(reference, "oci://")
+
 	slash := strings.LastIndex(rest, "/")
 	if slash < 0 {
 		return "", "", "", fmt.Errorf("%q has no chart name (want oci://host/path/name:version)", reference)
 	}
+
 	name, tag, ok := strings.Cut(rest[slash+1:], ":")
 	if !ok || name == "" || tag == "" {
 		return "", "", "", fmt.Errorf("%q has no version (want oci://host/path/name:version)", reference)
 	}
+
 	return "oci://" + rest[:slash], name, tag, nil
 }
 
@@ -199,5 +223,6 @@ func PullChart(ctx context.Context, reference string, creds Credentials) (*Pulle
 	if err != nil {
 		return nil, err
 	}
+
 	return Pull(ctx, Source{OCIChart: &OCIChartSource{Reference: repository + "/" + name, Version: tag}}, Options{Credentials: creds})
 }

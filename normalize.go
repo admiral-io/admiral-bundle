@@ -90,21 +90,26 @@ func Normalize(r io.Reader) (*Normalized, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	if len(files) == 0 {
 		return nil, ErrEmpty
 	}
+
 	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
 
 	var buf bytes.Buffer
+
 	gz, err := gzip.NewWriterLevel(&buf, gzip.BestCompression)
 	if err != nil {
 		return nil, err
 	}
+
 	// A fixed header: gzip otherwise records the current time and, through
 	// some writers, a file name, either of which would make identical trees
 	// digest differently.
 	gz.Header = gzip.Header{ModTime: time.Time{}, OS: 255}
 	tw := tar.NewWriter(gz)
+
 	for _, f := range files {
 		hdr := &tar.Header{
 			Name:     f.Path,
@@ -117,16 +122,20 @@ func Normalize(r io.Reader) (*Normalized, error) {
 		if err := tw.WriteHeader(hdr); err != nil {
 			return nil, err
 		}
+
 		if _, err := tw.Write(f.Data); err != nil {
 			return nil, err
 		}
 	}
+
 	if err := tw.Close(); err != nil {
 		return nil, err
 	}
+
 	if err := gz.Close(); err != nil {
 		return nil, err
 	}
+
 	return &Normalized{Bytes: buf.Bytes(), Files: files}, nil
 }
 
@@ -137,6 +146,7 @@ func readTree(r io.Reader) ([]File, error) {
 		return nil, fmt.Errorf("%w: %v", ErrNotTarGz, err)
 	}
 	defer gz.Close()
+
 	tr := tar.NewReader(gz)
 
 	var (
@@ -145,11 +155,13 @@ func readTree(r io.Reader) ([]File, error) {
 		seen  = make(map[string]bool)
 		total int64
 	)
+
 	for {
 		hdr, err := tr.Next()
 		if errors.Is(err, io.EOF) {
 			break
 		}
+
 		if err != nil {
 			return nil, fmt.Errorf("%w: %v", ErrNotTarGz, err)
 		}
@@ -158,9 +170,11 @@ func readTree(r io.Reader) ([]File, error) {
 		if !ok {
 			return nil, fmt.Errorf("%w: %q", ErrBadPath, hdr.Name)
 		}
+
 		if name == "" || isIgnored(name) {
 			continue
 		}
+
 		if len(files)+len(links) >= maxEntries {
 			return nil, fmt.Errorf("%w: more than %d", ErrTooManyEntries, maxEntries)
 		}
@@ -172,19 +186,23 @@ func readTree(r io.Reader) ([]File, error) {
 			if hdr.Size < 0 {
 				return nil, fmt.Errorf("%w: %s has a negative size", ErrNotTarGz, name)
 			}
+
 			total += hdr.Size
 			if total > MaxUncompressed {
 				return nil, ErrTooLarge
 			}
+
 			// Exactly the declared size, allocated once: the tar reader ends
 			// the entry there, so a short read is a truncated stream.
 			data := make([]byte, hdr.Size)
 			if _, err := io.ReadFull(tr, data); err != nil {
 				return nil, fmt.Errorf("%w: %s is not the size its header claims", ErrNotTarGz, name)
 			}
+
 			if seen[name] {
 				return nil, fmt.Errorf("%w: %q appears twice", ErrBadPath, name)
 			}
+
 			seen[name] = true
 			files = append(files, File{Path: name, Mode: normalizeMode(hdr.Mode), Data: data})
 		case tar.TypeSymlink:
@@ -194,9 +212,11 @@ func readTree(r io.Reader) ([]File, error) {
 			if !linkStaysInside(name, hdr.Linkname) {
 				return nil, fmt.Errorf("%w: symlink %q escapes the bundle", ErrBadPath, name)
 			}
+
 			if seen[name] {
 				return nil, fmt.Errorf("%w: %q appears twice", ErrBadPath, name)
 			}
+
 			seen[name] = true
 			links[name] = hdr.Linkname
 		case tar.TypeXGlobalHeader, tar.TypeXHeader:
@@ -205,9 +225,11 @@ func readTree(r io.Reader) ([]File, error) {
 			return nil, fmt.Errorf("%w: %q", ErrEntryKind, name)
 		}
 	}
+
 	if len(links) == 0 {
 		return files, nil
 	}
+
 	return resolveLinks(files, links)
 }
 
@@ -231,33 +253,43 @@ func resolveLinks(files []File, links map[string]string) ([]File, error) {
 		t.files[f.Path] = f
 		t.paths = append(t.paths, f.Path)
 	}
+
 	sort.Strings(t.paths)
+
 	names := make([]string, 0, len(links))
 	for name := range links {
 		names = append(names, name)
 	}
+
 	sort.Strings(names)
+
 	t.names = names
 	for _, name := range names {
 		target, err := t.real(name, 0)
 		if err != nil {
 			return nil, err
 		}
+
 		if err := t.expand(name, target, map[string]bool{}, &files); err != nil {
 			return nil, err
 		}
 	}
+
 	seen := make(map[string]bool, len(files))
+
 	var total int64
+
 	for _, f := range files {
 		if seen[f.Path] {
 			return nil, fmt.Errorf("%w: %q appears twice", ErrBadPath, f.Path)
 		}
+
 		seen[f.Path] = true
 		if total += int64(len(f.Data)); total > MaxUncompressed {
 			return nil, ErrTooLarge
 		}
 	}
+
 	return files, nil
 }
 
@@ -277,11 +309,14 @@ func under(sorted []string, prefix string) []string {
 	if prefix == "" {
 		return sorted
 	}
+
 	i := sort.SearchStrings(sorted, prefix)
+
 	j := i
 	for j < len(sorted) && strings.HasPrefix(sorted[j], prefix) {
 		j++
 	}
+
 	return sorted[i:j]
 }
 
@@ -291,18 +326,23 @@ func (t *linkTree) real(p string, depth int) (string, error) {
 	if depth > maxLinkDepth {
 		return "", fmt.Errorf("%w: symlink %q loops", ErrBadPath, p)
 	}
+
 	parts := strings.Split(p, "/")
 	for i := range parts {
 		cur := path.Join(parts[:i+1]...)
+
 		target, ok := t.links[cur]
 		if !ok {
 			continue
 		}
+
 		// linkStaysInside held for every link when it was read, and a
 		// cleaned join of inside paths stays inside.
 		resolved := path.Join(path.Dir(cur), target)
+
 		return t.real(path.Join(append([]string{resolved}, parts[i+1:]...)...), depth+1)
 	}
+
 	return p, nil
 }
 
@@ -316,13 +356,16 @@ func (t *linkTree) expand(dst, src string, active map[string]bool, out *[]File) 
 		// costs only an entry.
 		return fmt.Errorf("%w: more than %d after resolving symlinks", ErrTooManyEntries, maxEntries)
 	}
+
 	if f, ok := t.files[src]; ok {
 		*out = append(*out, File{Path: dst, Mode: f.Mode, Data: f.Data})
 		return nil
 	}
+
 	if active[src] {
 		return fmt.Errorf("%w: symlink %q loops", ErrBadPath, dst)
 	}
+
 	active[src] = true
 	defer delete(active, src)
 
@@ -330,28 +373,36 @@ func (t *linkTree) expand(dst, src string, active map[string]bool, out *[]File) 
 	if src == "." {
 		prefix = ""
 	}
+
 	found := false
+
 	for _, p := range under(t.paths, prefix) {
 		if len(*out) >= maxEntries {
 			return fmt.Errorf("%w: more than %d after resolving symlinks", ErrTooManyEntries, maxEntries)
 		}
+
 		f := t.files[p]
 		*out = append(*out, File{Path: path.Join(dst, p[len(prefix):]), Mode: f.Mode, Data: f.Data})
 		found = true
 	}
+
 	for _, l := range under(t.names, prefix) {
 		found = true
+
 		target, err := t.real(l, 0)
 		if err != nil {
 			return err
 		}
+
 		if err := t.expand(path.Join(dst, l[len(prefix):]), target, active, out); err != nil {
 			return err
 		}
 	}
+
 	if !found {
 		return fmt.Errorf("%w: symlink %q points at nothing in the bundle", ErrBadPath, dst)
 	}
+
 	return nil
 }
 
@@ -363,13 +414,16 @@ func cleanPath(name string) (string, bool) {
 	if strings.HasPrefix(name, "/") || strings.Contains(name, ":") {
 		return "", false
 	}
+
 	cleaned := path.Clean(name)
 	if cleaned == "." {
 		return "", true
 	}
+
 	if cleaned == ".." || strings.HasPrefix(cleaned, "../") {
 		return "", false
 	}
+
 	return cleaned, true
 }
 
@@ -383,6 +437,7 @@ func isIgnored(name string) bool {
 			return true
 		}
 	}
+
 	return false
 }
 
@@ -392,7 +447,9 @@ func linkStaysInside(name, target string) bool {
 	if strings.HasPrefix(target, "/") {
 		return false
 	}
+
 	resolved := path.Join(path.Dir(name), target)
+
 	return resolved != ".." && !strings.HasPrefix(resolved, "../")
 }
 
@@ -401,5 +458,6 @@ func normalizeMode(mode int64) int64 {
 	if mode&0o111 != 0 {
 		return 0o755
 	}
+
 	return 0o644
 }

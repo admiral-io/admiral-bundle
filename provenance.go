@@ -31,14 +31,17 @@ type Provenance struct {
 // came from is allowed, lying about it is not.
 func Describe(dir string) Provenance {
 	var p Provenance
+
 	repo, err := git.PlainOpenWithOptions(dir, &git.PlainOpenOptions{DetectDotGit: true})
 	if err != nil {
 		return p
 	}
+
 	wt, err := repo.Worktree()
 	if err != nil {
 		return p
 	}
+
 	top := wt.Filesystem.Root()
 	// The tree root comes with every link resolved; the directory must be
 	// spelled the same way or the two never meet.
@@ -47,17 +50,21 @@ func Describe(dir string) Provenance {
 			p.Path = filepath.ToSlash(rel)
 		}
 	}
+
 	if head, err := repo.Head(); err == nil {
 		p.Commit = head.Hash().String()
 	}
+
 	if origin, err := repo.Remote("origin"); err == nil && len(origin.Config().URLs) > 0 {
 		p.URI = origin.Config().URLs[0]
 	}
+
 	if status, err := wt.Status(); err == nil {
 		prefix := ""
 		if p.Path != "" {
 			prefix = p.Path + "/"
 		}
+
 		for file, st := range status {
 			if strings.HasPrefix(file, prefix) && (st.Worktree != git.Unmodified || st.Staging != git.Unmodified) {
 				p.Dirty = true
@@ -65,5 +72,6 @@ func Describe(dir string) Provenance {
 			}
 		}
 	}
+
 	return p
 }

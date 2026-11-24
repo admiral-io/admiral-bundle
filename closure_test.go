@@ -13,6 +13,7 @@ func tf(files map[string]string) []File {
 	for p, d := range files {
 		out = append(out, File{Path: p, Mode: 0o644, Data: []byte(d)})
 	}
+
 	return out
 }
 
@@ -93,10 +94,12 @@ func TestNormalizeStripsTerraformCaches(t *testing.T) {
 		entry{name: ".terraform.lock.hcl", data: "lock"},
 	)))
 	require.NoError(t, err)
+
 	var paths []string
 	for _, f := range n.Files {
 		paths = append(paths, f.Path)
 	}
+
 	assert.Equal(t, []string{".terraform.lock.hcl", "main.tf"}, paths, "the lock file stays; the caches do not")
 }
 

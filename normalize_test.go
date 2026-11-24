@@ -23,20 +23,25 @@ type entry struct {
 // given, with real timestamps and ownership, and a named gzip header.
 func targz(t *testing.T, entries ...entry) []byte {
 	t.Helper()
+
 	var buf bytes.Buffer
+
 	gz := gzip.NewWriter(&buf)
 	gz.Name = "whatever.tar"
 	gz.ModTime = time.Now()
 	tw := tar.NewWriter(gz)
+
 	for _, e := range entries {
 		typ := e.typ
 		if typ == 0 {
 			typ = tar.TypeReg
 		}
+
 		mode := e.mode
 		if mode == 0 {
 			mode = 0o664
 		}
+
 		hdr := &tar.Header{
 			Name: e.name, Mode: mode, Typeflag: typ, Linkname: e.link,
 			Size: int64(len(e.data)), ModTime: time.Now(), Uid: 501, Gid: 20, Uname: "someone",
@@ -44,14 +49,18 @@ func targz(t *testing.T, entries ...entry) []byte {
 		if typ == tar.TypeSymlink || typ == tar.TypeDir {
 			hdr.Size = 0
 		}
+
 		require.NoError(t, tw.WriteHeader(hdr))
+
 		if typ == tar.TypeReg {
 			_, err := tw.Write([]byte(e.data))
 			require.NoError(t, err)
 		}
 	}
+
 	require.NoError(t, tw.Close())
 	require.NoError(t, gz.Close())
+
 	return buf.Bytes()
 }
 
@@ -65,7 +74,9 @@ func TestNormalizeIsAFunctionOfTheTreeAlone(t *testing.T) {
 		entry{name: ".git/HEAD", data: "ref: refs/heads/main"},
 		entry{name: ".git/objects/", typ: tar.TypeDir},
 	)
+
 	time.Sleep(5 * time.Millisecond) // a different clock for every timestamp
+
 	b := targz(t,
 		entry{name: "modules/a.tf", data: "x", mode: 0o644},
 		entry{name: "main.tf", data: "resource {}", mode: 0o444},
@@ -115,10 +126,12 @@ func TestNormalizeResolvesLinksIntoCopies(t *testing.T) {
 		entry{name: "modules/alias.tf", link: "net/main.tf", typ: tar.TypeSymlink},
 	)))
 	require.NoError(t, err)
+
 	got := map[string]File{}
 	for _, f := range n.Files {
 		got[f.Path] = f
 	}
+
 	assert.Equal(t, "#!/bin/sh", string(got["link.sh"].Data))
 	assert.EqualValues(t, 0o755, got["link.sh"].Mode, "the copy takes the target's mode")
 	assert.Equal(t, `variable "cidr" {}`, string(got["modules/net/main.tf"].Data))
@@ -129,12 +142,14 @@ func TestNormalizeResolvesLinksIntoCopies(t *testing.T) {
 	// The output has no link entries.
 	gz, err := gzip.NewReader(bytes.NewReader(n.Bytes))
 	require.NoError(t, err)
+
 	tr := tar.NewReader(gz)
 	for {
 		hdr, err := tr.Next()
 		if err != nil {
 			break
 		}
+
 		assert.Equal(t, byte(tar.TypeReg), hdr.Typeflag, hdr.Name)
 	}
 
@@ -155,6 +170,7 @@ func TestNormalizeBoundsLinkExpansion(t *testing.T) {
 			entry{name: fmt.Sprintf("d%d/b", i), link: fmt.Sprintf("../d%d", i-1), typ: tar.TypeSymlink},
 		)
 	}
+
 	_, err := Normalize(bytes.NewReader(targz(t, es...)))
 	assert.ErrorIs(t, err, ErrTooManyEntries)
 }
@@ -262,6 +278,7 @@ func TestInspectTerraform(t *testing.T) {
 	assert.Equal(t, KindTerraform, r.Kind)
 
 	require.Len(t, r.Contract.Inputs, 3)
+
 	nullable := true // Terraform's default when a variable does not say
 	assert.Equal(t, Input{Name: "name", Type: "string", Description: "The instance name.", Required: true, Nullable: &nullable}, r.Contract.Inputs[0])
 	assert.Equal(t, Input{Name: "password", Type: "string", Required: true, Sensitive: true, Nullable: &nullable}, r.Contract.Inputs[1])
@@ -272,10 +289,12 @@ func TestInspectTerraform(t *testing.T) {
 	assert.Equal(t, Output{Name: "root_password", Sensitive: true}, r.Contract.Outputs[1])
 
 	codes := map[string]string{}
+
 	for _, f := range r.Findings {
 		assert.Equal(t, SeverityInfo, f.Severity)
 		codes[f.Source+"/"+f.Code] += " " + f.Message
 	}
+
 	assert.Contains(t, codes["provider-constraint/missing"], `"aws"`)
 	assert.Contains(t, codes["provider-constraint/unbounded"], `"google"`)
 	assert.NotContains(t, codes["provider-constraint/unbounded"], `"random"`, "a pessimistic constraint is bounded")
@@ -330,6 +349,7 @@ variable "computed" {
 
 	r, err := Inspect(files, KindTerraform)
 	require.NoError(t, err)
+
 	byName := map[string]Input{}
 	for _, in := range r.Contract.Inputs {
 		byName[in.Name] = in
@@ -376,12 +396,16 @@ func TestInspectHelmReadsTheValuesSchema(t *testing.T) {
 	}
 	r, err := Inspect(files, "")
 	require.NoError(t, err)
+
 	byName := map[string]Input{}
+
 	var order []string
+
 	for _, in := range r.Contract.Inputs {
 		byName[in.Name] = in
 		order = append(order, in.Name)
 	}
+
 	assert.Equal(t, []string{"debug", "hostname", "legacy", "replicas"}, order, "sorted, schema-only inputs included")
 
 	replicas := byName["replicas"]
@@ -438,11 +462,13 @@ func TestInspectHelm(t *testing.T) {
 // by entries as it expands, not only by bytes after.
 func TestNormalizeStopsLinkExpansionEarly(t *testing.T) {
 	var buf bytes.Buffer
+
 	gz := gzip.NewWriter(&buf)
 	tw := tar.NewWriter(gz)
 	add := func(name string, typ byte, link string, data string) {
 		hdr := &tar.Header{Name: name, Typeflag: typ, Linkname: link, Mode: 0o644, Size: int64(len(data))}
 		require.NoError(t, tw.WriteHeader(hdr))
+
 		if typ == tar.TypeReg {
 			_, _ = tw.Write([]byte(data))
 		}
@@ -452,17 +478,21 @@ func TestNormalizeStopsLinkExpansionEarly(t *testing.T) {
 	for i := 0; i < 64; i++ {
 		add(fmt.Sprintf("d0/f%d", i), tar.TypeReg, "", "x")
 	}
+
 	for level := 1; level <= 3; level++ {
 		for i := 0; i < 64; i++ {
 			add(fmt.Sprintf("d%d/l%d", level, i), tar.TypeSymlink, fmt.Sprintf("../d%d", level-1), "")
 		}
 	}
+
 	require.NoError(t, tw.Close())
 	require.NoError(t, gz.Close())
 	assert.Less(t, buf.Len(), 1<<16, "small on the wire")
 
 	done := make(chan error, 1)
+
 	go func() { _, err := Normalize(bytes.NewReader(buf.Bytes())); done <- err }()
+
 	select {
 	case err := <-done:
 		assert.ErrorIs(t, err, ErrTooManyEntries)
@@ -473,13 +503,17 @@ func TestNormalizeStopsLinkExpansionEarly(t *testing.T) {
 
 func TestNormalizeBoundsEntries(t *testing.T) {
 	var buf bytes.Buffer
+
 	gz := gzip.NewWriter(&buf)
+
 	tw := tar.NewWriter(gz)
 	for i := 0; i <= maxEntries; i++ {
 		require.NoError(t, tw.WriteHeader(&tar.Header{Name: fmt.Sprintf("f%d", i), Typeflag: tar.TypeReg, Mode: 0o644}))
 	}
+
 	require.NoError(t, tw.Close())
 	require.NoError(t, gz.Close())
+
 	_, err := Normalize(bytes.NewReader(buf.Bytes()))
 	assert.ErrorIs(t, err, ErrTooManyEntries)
 }

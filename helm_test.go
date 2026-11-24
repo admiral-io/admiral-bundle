@@ -22,7 +22,9 @@ import (
 // way most indexes do. digest is the index's claim about the archive.
 func helmRepo(t *testing.T, archive []byte, digest string) *httptest.Server {
 	t.Helper()
+
 	const name, version = "sample", "0.3.9"
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/index.yaml", func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintf(w, "apiVersion: v1\nentries:\n  %s:\n  - version: %s\n    urls:\n    - %s-%s.tgz\n    digest: %s\n",
@@ -33,14 +35,18 @@ func helmRepo(t *testing.T, archive []byte, digest string) *httptest.Server {
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
+
 	return srv
 }
 
 // chartArchive is sample 0.3.9 as a repository would serve it.
 func chartArchive(t *testing.T) []byte {
 	t.Helper()
+
 	const name, version = "sample", "0.3.9"
+
 	var buf bytes.Buffer
+
 	gz := gzip.NewWriter(&buf)
 	tw := tar.NewWriter(gz)
 	data := fmt.Sprintf("apiVersion: v2\nname: %s\nversion: %s\n", name, version)
@@ -48,6 +54,7 @@ func chartArchive(t *testing.T) []byte {
 	_, _ = tw.Write([]byte(data))
 	require.NoError(t, tw.Close())
 	require.NoError(t, gz.Close())
+
 	return buf.Bytes()
 }
 
@@ -65,10 +72,13 @@ func wrapperChart(t *testing.T, repoURL, lock string) string {
 		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(data), 0o644))
 	}
 	write("Chart.yaml", "apiVersion: v2\nname: sample\nversion: 0.1.0\ndependencies:\n  - name: sample\n    version: \"^0.3.0\"\n    repository: "+repoURL+"\n")
+
 	if lock != "" {
 		write("Chart.lock", lock)
 	}
+
 	write("values.yaml", "sample:\n  replicaCount: 1\n")
+
 	return dir
 }
 
@@ -185,6 +195,7 @@ func TestPackClosesADirectoryDependencyInTurn(t *testing.T) {
 	assert.Contains(t, err.Error(), "charts/lib")
 
 	write("lib/Chart.lock", "dependencies:\n- name: common\n  repository: file://../common\n  version: 0.1.0\n")
+
 	p, err := Pack(filepath.Join(base, "app"))
 	require.NoError(t, err)
 	files := entries(t, p.Bytes)
@@ -208,6 +219,7 @@ func TestPackClosesADirectoryDependencyInTurn(t *testing.T) {
 	write("app2/Chart.yaml", "apiVersion: v2\nname: app2\nversion: 0.1.0\ndependencies:\n  - name: lib\n    version: 0.1.0\n    repository: file://../lib\n")
 	write("app2/Chart.lock", "dependencies:\n- name: lib\n  repository: file://../lib\n  version: 0.1.0\n")
 	write("app2/charts/lib/Chart.yaml", "apiVersion: v2\nname: lib\nversion: 0.1.0\ndependencies:\n  - name: common\n    version: 0.1.0\n    repository: https://charts.example.test\n")
+
 	_, err = Pack(filepath.Join(base, "app2"))
 	assert.ErrorIs(t, err, ErrChartLockMissing)
 }

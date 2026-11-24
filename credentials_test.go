@@ -34,9 +34,11 @@ func TestAmbientCredentials(t *testing.T) {
 	lookup := func(u string) string {
 		c, err := a.Lookup(context.Background(), u)
 		require.NoError(t, err)
+
 		if c == nil {
 			return ""
 		}
+
 		return c.Token
 	}
 	assert.Equal(t, "from-rc", lookup("https://app.terraform.io/"))
@@ -63,6 +65,7 @@ func TestAmbientCredentials(t *testing.T) {
 		"machine gitlab.acme.example login deploy password nr-secret\ndefault login anon password anon-pw\n"), 0o600))
 	require.NoError(t, os.WriteFile(filepath.Join(home, ".git-credentials"), []byte(
 		"https://x-access-token:ghp_stored@github.com\n"), 0o600))
+
 	c, err = a.Lookup(context.Background(), "https://gitlab.acme.example/acme/infra.git")
 	require.NoError(t, err)
 	assert.Equal(t, &BasicAuth{Username: "deploy", Password: "nr-secret"}, c.Basic)
@@ -70,6 +73,7 @@ func TestAmbientCredentials(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, &BasicAuth{Username: "anon", Password: "anon-pw"}, c.Basic, "netrc's default entry wins over git-credentials")
 	require.NoError(t, os.Remove(filepath.Join(home, ".netrc")))
+
 	c, err = a.Lookup(context.Background(), "https://github.com/acme/infra.git")
 	require.NoError(t, err)
 	assert.Equal(t, &BasicAuth{Username: "x-access-token", Password: "ghp_stored"}, c.Basic)
@@ -121,14 +125,17 @@ func (s staticCredentials) Lookup(_ context.Context, rawURL string) (*Credential
 			best = prefix
 		}
 	}
+
 	if best == "" {
 		return nil, nil
 	}
+
 	return s[best], nil
 }
 
 func TestNewAmbientCredentialsReadsTheProcess(t *testing.T) {
 	t.Setenv("TF_TOKEN_registry_example_test", "ambient")
+
 	c := NewAmbientCredentials()
 	cred, err := c.Lookup(context.Background(), "https://registry.example.test/")
 	require.NoError(t, err)
@@ -157,10 +164,12 @@ func TestCredentialsRideHTTPSOnly(t *testing.T) {
 	asked := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		asked++
+
 		if r.Header.Get("Authorization") == "" {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
+
 		_, _ = w.Write(tgz(t, "net", map[string]string{"main.tf": ""}))
 	}))
 	t.Cleanup(srv.Close)

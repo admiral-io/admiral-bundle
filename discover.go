@@ -107,6 +107,7 @@ func helmArtifacts(ctx context.Context, repoURL string, opts Options) ([]Artifac
 	if err != nil {
 		return nil, err
 	}
+
 	out := make([]Artifact, 0, len(index.Entries))
 	for name, entries := range index.Entries {
 		a := Artifact{Name: name}
@@ -115,14 +116,18 @@ func helmArtifacts(ctx context.Context, repoURL string, opts Options) ([]Artifac
 				a.Latest = v.Name
 			}
 		}
+
 		for _, e := range entries {
 			if e.Version == a.Latest {
 				a.Description = e.Description
 			}
 		}
+
 		out = append(out, a)
 	}
+
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+
 	return out, nil
 }
 
@@ -131,10 +136,12 @@ func helmVersions(ctx context.Context, repoURL, chart string, opts Options) ([]V
 	if err != nil {
 		return nil, err
 	}
+
 	entries, ok := index.Entries[chart]
 	if !ok {
 		return nil, fmt.Errorf("%w: %s in %s", ErrArtifactNotFound, chart, redactSource(repoURL))
 	}
+
 	return orderedVersions(entryVersions(entries)), nil
 }
 
@@ -143,6 +150,7 @@ func entryVersions(entries []repoEntry) []Version {
 	for _, e := range entries {
 		out = append(out, Version{Name: e.Version, Created: e.Created})
 	}
+
 	return out
 }
 
@@ -153,23 +161,29 @@ func ociVersions(ctx context.Context, namespace, name string, opts Options) ([]V
 	if err != nil {
 		return nil, err
 	}
+
 	if name == "" || strings.ContainsAny(name, "/:@") {
 		return nil, fmt.Errorf("%q is not a name under oci://%s", name, base)
 	}
+
 	repo, err := newOCIClient(opts).repository(base + "/" + name)
 	if err != nil {
 		return nil, err
 	}
+
 	var out []Version
+
 	err = repo.Tags(ctx, "", func(tags []string) error {
 		for _, t := range tags {
 			out = append(out, Version{Name: t})
 		}
+
 		return nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("oci://%s/%s: %w", base, name, err)
 	}
+
 	return orderedVersions(out), nil
 }
 
@@ -184,24 +198,32 @@ func registryArtifacts(ctx context.Context, r *registryClient, namespace string)
 	if err != nil {
 		return nil, err
 	}
+
 	base, err := r.modulesBase(ctx, host)
 	if err != nil {
 		return nil, err
 	}
+
 	var out []Artifact
+
 	offset := 0
+
 	for page := 0; page < maxRegistryPages; page++ {
 		u := base.JoinPath(ns)
 		q := u.Query()
 		q.Set("limit", "100")
+
 		if offset > 0 {
 			q.Set("offset", fmt.Sprint(offset))
 		}
+
 		u.RawQuery = q.Encode()
+
 		resp, err := r.get(ctx, host, u)
 		if err != nil {
 			return nil, err
 		}
+
 		var body struct {
 			Meta struct {
 				NextOffset *int `json:"next_offset"`
@@ -213,8 +235,10 @@ func registryArtifacts(ctx context.Context, r *registryClient, namespace string)
 				Version     string `json:"version"`
 			} `json:"modules"`
 		}
+
 		decodeErr := func() error {
 			defer resp.Body.Close() //nolint:errcheck
+
 			switch resp.StatusCode {
 			case http.StatusOK:
 			case http.StatusNotFound:
@@ -222,20 +246,26 @@ func registryArtifacts(ctx context.Context, r *registryClient, namespace string)
 			default:
 				return registryError(namespace, resp)
 			}
+
 			return json.NewDecoder(io.LimitReader(resp.Body, maxRegistryBody)).Decode(&body)
 		}()
 		if decodeErr != nil {
 			return nil, decodeErr
 		}
+
 		for _, m := range body.Modules {
 			out = append(out, Artifact{Name: m.Name + "/" + m.Provider, Description: m.Description, Latest: m.Version})
 		}
+
 		if body.Meta.NextOffset == nil || *body.Meta.NextOffset <= offset || len(body.Modules) == 0 {
 			break
 		}
+
 		offset = *body.Meta.NextOffset
 	}
+
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+
 	return out, nil
 }
 
@@ -243,21 +273,26 @@ func registryVersions(ctx context.Context, r *registryClient, namespace, artifac
 	if strings.Count(artifact, "/") != 1 {
 		return nil, fmt.Errorf("%q is not a registry artifact (want name/provider)", artifact)
 	}
+
 	m, err := tfaddr.ParseModuleSource(strings.TrimSuffix(namespace, "/") + "/" + artifact)
 	if err != nil {
 		return nil, fmt.Errorf("%s/%s: %w", namespace, artifact, err)
 	}
+
 	versions, err := r.Versions(ctx, m.Package)
 	if errors.Is(err, ErrRegistryNotFound) {
 		return nil, fmt.Errorf("%w: %s in %s", ErrArtifactNotFound, artifact, namespace)
 	}
+
 	if err != nil {
 		return nil, err
 	}
+
 	out := make([]Version, 0, len(versions))
 	for _, v := range versions {
 		out = append(out, Version{Name: v.Original()})
 	}
+
 	return orderedVersions(out), nil
 }
 
@@ -282,32 +317,41 @@ func gitVersions(ctx context.Context, repository string, opts Options) ([]Versio
 	if err != nil || u.Scheme == "" {
 		return nil, fmt.Errorf("%q is not a git URL", repository)
 	}
+
 	g, ok := opts.Git.(*Git)
 	if !ok {
 		g = &Git{Dial: opts.Dial, Credentials: opts.Credentials}
 	}
+
 	var cred *Credential
 	if opts.Credentials != nil {
 		if cred, err = opts.Credentials.Lookup(ctx, u.String()); err != nil {
 			return nil, err
 		}
 	}
+
 	auth, err := g.auth(u, cred)
 	if err != nil {
 		return nil, err
 	}
+
 	ctx, proxy, release := g.dialing(ctx, u)
 	defer release()
+
 	remote := git.NewRemote(memory.NewStorage(), &config.RemoteConfig{Name: "origin", URLs: []string{u.String()}})
+
 	refs, err := remote.ListContext(ctx, &git.ListOptions{Auth: auth, ProxyOptions: proxy, PeelingOption: git.AppendPeeled})
 	if err != nil {
 		return nil, fmt.Errorf("list %s: %w", u.Redacted(), err)
 	}
+
 	// A peeled entry, `refs/tags/v1^{}`, names the commit an annotated tag
 	// points at; the tag's own entry names the tag object. The commit is
 	// what a reader wants, so the peeled one wins when both exist.
 	commits := map[string]string{}
+
 	var tags, branches []Version
+
 	for _, ref := range refs {
 		name := ref.Name()
 		switch {
@@ -320,10 +364,13 @@ func gitVersions(ctx context.Context, repository string, opts Options) ([]Versio
 			branches = append(branches, Version{Name: name.Short(), Branch: true, Commit: ref.Hash().String()})
 		}
 	}
+
 	for short, commit := range commits {
 		tags = append(tags, Version{Name: short, Commit: commit})
 	}
+
 	sort.Slice(branches, func(i, j int) bool { return branches[i].Name < branches[j].Name })
+
 	return append(orderedVersions(tags), branches...), nil
 }
 
@@ -335,14 +382,17 @@ func orderedVersions(in []Version) []Version {
 		v      Version
 		semver *version.Version
 	}
+
 	ks := make([]keyed, 0, len(in))
 	for _, v := range in {
 		k := keyed{v: v}
 		if sv, err := version.NewSemver(v.Name); err == nil {
 			k.semver = sv
 		}
+
 		ks = append(ks, k)
 	}
+
 	sort.SliceStable(ks, func(i, j int) bool {
 		a, b := ks[i], ks[j]
 		switch {
@@ -356,9 +406,11 @@ func orderedVersions(in []Version) []Version {
 			return a.v.Name > b.v.Name
 		}
 	})
+
 	out := make([]Version, 0, len(ks))
 	for _, k := range ks {
 		out = append(out, k.v)
 	}
+
 	return out
 }

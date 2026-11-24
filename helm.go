@@ -119,7 +119,9 @@ func closeHelm(ctx context.Context, rootAbs, stage string, f *helmFetcher) (vend
 	if err != nil {
 		return nil, nil, "", err
 	}
+
 	vendored, pins, err = closeChart(ctx, rootAbs, stage, ".", f, 0)
+
 	return vendored, pins, meta.Version, err
 }
 
@@ -133,22 +135,27 @@ func closeChart(ctx context.Context, srcDir, stageDir, caller string, f *helmFet
 	if depth > maxChartDepth {
 		return nil, nil, fmt.Errorf("%s: chart dependencies nest deeper than %d", caller, maxChartDepth)
 	}
+
 	meta, err := readChartMetadata(srcDir)
 	if err != nil {
 		return nil, nil, err
 	}
+
 	if len(meta.Dependencies) == 0 {
 		return nil, nil, nil
 	}
+
 	lock, err := readChartLock(srcDir)
 	if err != nil {
 		return nil, nil, fmt.Errorf("%s: %w", caller, err)
 	}
+
 	if err := lockMatches(meta, lock); err != nil {
 		return nil, nil, fmt.Errorf("%s: %w", caller, err)
 	}
 
 	chartsDir := filepath.Join(stageDir, "charts")
+
 	for _, locked := range lock.Dependencies {
 		declared := findDependency(meta.Dependencies, locked)
 		pin := Pin{
@@ -156,25 +163,31 @@ func closeChart(ctx context.Context, srcDir, stageDir, caller string, f *helmFet
 			Constraint: declared.Version,
 			Resolved:   locked.Version,
 		}
+
 		into, depSrc, err := vendorChartDependency(ctx, srcDir, chartsDir, locked, f)
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s: dependency %q: %w", caller, locked.Name, err)
 		}
+
 		pins = append(pins, pin)
 		if into != "" {
 			vendored = append(vendored, Vendored{Caller: caller, Source: pin.Source + " " + locked.Version, Into: path.Join(caller, into)})
 		}
+
 		// A directory dependency is a chart with dependencies of its own.
 		if depSrc != "" {
 			sub := path.Join("charts", locked.Name)
+
 			v, p, err := closeChart(ctx, depSrc, filepath.Join(chartsDir, locked.Name), path.Join(caller, sub), f, depth+1)
 			if err != nil {
 				return nil, nil, err
 			}
+
 			vendored = append(vendored, v...)
 			pins = append(pins, p...)
 		}
 	}
+
 	return vendored, pins, nil
 }
 
@@ -187,6 +200,7 @@ func vendorChartDependency(ctx context.Context, chartDir, chartsDir string, dep 
 	if _, err := os.Stat(filepath.Join(chartsDir, tgz)); err == nil {
 		return "", "", nil
 	}
+
 	if _, err := os.Stat(filepath.Join(chartsDir, dep.Name, "Chart.yaml")); err == nil {
 		// Unpacked under charts/ by the author; the staged copy is what is
 		// closed, and it came from the same place in the working copy.
@@ -202,24 +216,30 @@ func vendorChartDependency(ctx context.Context, chartDir, chartsDir string, dep 
 		if info, err := os.Stat(src); err != nil || !info.IsDir() {
 			return "", "", fmt.Errorf("%w: %s does not exist", ErrSourceDirMissing, dep.Repository)
 		}
+
 		if err := withinBoundary(f.boundary, src); err != nil {
 			return "", "", fmt.Errorf("%s: %w", dep.Repository, err)
 		}
+
 		if err := copyTree(src, filepath.Join(chartsDir, dep.Name), src, true); err != nil {
 			return "", "", err
 		}
+
 		return path.Join("charts", dep.Name), src, nil
 	case strings.HasPrefix(dep.Repository, "oci://"):
 		data, _, err := f.oci.pullChart(ctx, dep.Repository, dep.Name, dep.Version)
 		if err != nil {
 			return "", "", err
 		}
+
 		if err := os.MkdirAll(chartsDir, 0o755); err != nil {
 			return "", "", err
 		}
+
 		if err := os.WriteFile(filepath.Join(chartsDir, tgz), data, 0o644); err != nil {
 			return "", "", err
 		}
+
 		return path.Join("charts", tgz), "", nil
 	case strings.HasPrefix(dep.Repository, "@") || strings.HasPrefix(dep.Repository, "alias:"):
 		return "", "", fmt.Errorf("%w: %s is a repository alias; declare the repository's URL", ErrChartDependencyUnsupported, dep.Repository)
@@ -228,12 +248,15 @@ func vendorChartDependency(ctx context.Context, chartDir, chartsDir string, dep 
 		if err != nil {
 			return "", "", err
 		}
+
 		if err := os.MkdirAll(chartsDir, 0o755); err != nil {
 			return "", "", err
 		}
+
 		if err := os.WriteFile(filepath.Join(chartsDir, tgz), data, 0o644); err != nil {
 			return "", "", err
 		}
+
 		return path.Join("charts", tgz), "", nil
 	default:
 		return "", "", fmt.Errorf("%w: %s", ErrChartDependencyUnsupported, redactSource(dep.Repository))
@@ -248,31 +271,38 @@ var ErrChartDependencyMissingLocal = errors.New("chart dependency is not under c
 // downloads the archive the index names, verifying the index's digest.
 func (f *helmFetcher) fetchChart(ctx context.Context, dep chartDependency) ([]byte, error) {
 	repoURL := strings.TrimSuffix(dep.Repository, "/")
+
 	index, err := f.fetchIndex(ctx, repoURL)
 	if err != nil {
 		return nil, err
 	}
+
 	entry, ok := findEntry(index, dep.Name, dep.Version)
 	if !ok {
 		return nil, fmt.Errorf("%s %s is not in the index at %s", dep.Name, dep.Version, redactSource(repoURL))
 	}
+
 	if len(entry.URLs) == 0 {
 		return nil, fmt.Errorf("the index at %s has no download URL for %s %s", redactSource(repoURL), dep.Name, dep.Version)
 	}
+
 	chartURL, err := resolveChartURL(repoURL, entry.URLs[0])
 	if err != nil {
 		return nil, err
 	}
+
 	data, err := f.get(ctx, chartURL)
 	if err != nil {
 		return nil, err
 	}
+
 	if entry.Digest != "" {
 		sum := sha256.Sum256(data)
 		if got := hex.EncodeToString(sum[:]); got != strings.TrimPrefix(entry.Digest, "sha256:") {
 			return nil, fmt.Errorf("%s from %s does not match the index's digest (%s, got sha256:%s)", dep.Name, redactSource(chartURL), entry.Digest, got)
 		}
 	}
+
 	return data, nil
 }
 
@@ -281,10 +311,12 @@ func (f *helmFetcher) fetchIndex(ctx context.Context, repoURL string) (*repoInde
 	if err != nil {
 		return nil, err
 	}
+
 	var index repoIndex
 	if err := yaml.Unmarshal(data, &index); err != nil {
 		return nil, fmt.Errorf("%s/index.yaml: %w", redactSource(repoURL), err)
 	}
+
 	return &index, nil
 }
 
@@ -297,32 +329,40 @@ func (f *helmFetcher) get(ctx context.Context, rawURL string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	req.Header.Set("User-Agent", userAgent)
+
 	if f.creds != nil {
 		cred, err := f.creds.Lookup(ctx, rawURL)
 		if err != nil {
 			return nil, err
 		}
+
 		if err := cred.authorize(req, f.insecure); err != nil {
 			return nil, err
 		}
 	}
+
 	resp, err := f.client.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close() //nolint:errcheck
+
 	shown := redactSource(rawURL)
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("GET %s: %s", shown, resp.Status)
 	}
+
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxChartBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("GET %s: %w", shown, err)
 	}
+
 	if len(data) > maxChartBytes {
 		return nil, fmt.Errorf("GET %s: larger than %d bytes", shown, maxChartBytes)
 	}
+
 	return data, nil
 }
 
@@ -333,13 +373,16 @@ func resolveChartURL(repoURL, ref string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("index URL %q: %w", ref, err)
 	}
+
 	if u.IsAbs() {
 		return ref, nil
 	}
+
 	base, err := url.Parse(repoURL + "/")
 	if err != nil {
 		return "", err
 	}
+
 	return base.ResolveReference(u).String(), nil
 }
 
@@ -349,6 +392,7 @@ func findEntry(index *repoIndex, name, version string) (repoEntry, bool) {
 			return e, true
 		}
 	}
+
 	return repoEntry{}, false
 }
 
@@ -357,10 +401,12 @@ func readChartMetadata(rootAbs string) (*chartMetadata, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	var meta chartMetadata
 	if err := yaml.Unmarshal(data, &meta); err != nil {
 		return nil, fmt.Errorf("reading Chart.yaml: %w", err)
 	}
+
 	return &meta, nil
 }
 
@@ -369,13 +415,16 @@ func readChartLock(rootAbs string) (*chartLock, error) {
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, ErrChartLockMissing
 	}
+
 	if err != nil {
 		return nil, err
 	}
+
 	var lock chartLock
 	if err := yaml.Unmarshal(data, &lock); err != nil {
 		return nil, fmt.Errorf("reading Chart.lock: %w", err)
 	}
+
 	return &lock, nil
 }
 
@@ -386,11 +435,13 @@ func lockMatches(meta *chartMetadata, lock *chartLock) error {
 	if len(meta.Dependencies) != len(lock.Dependencies) {
 		return fmt.Errorf("%w: Chart.yaml declares %d dependencies, Chart.lock has %d", ErrChartLockStale, len(meta.Dependencies), len(lock.Dependencies))
 	}
+
 	for _, locked := range lock.Dependencies {
 		if findDependency(meta.Dependencies, locked) == nil {
 			return fmt.Errorf("%w: %s from %s is in Chart.lock but not in Chart.yaml", ErrChartLockStale, locked.Name, locked.Repository)
 		}
 	}
+
 	return nil
 }
 
@@ -401,6 +452,7 @@ func findDependency(declared []chartDependency, locked chartDependency) *chartDe
 			return d
 		}
 	}
+
 	return nil
 }
 
@@ -410,5 +462,6 @@ func dependencySource(dep chartDependency) string {
 	if dep.Repository == "" {
 		return dep.Name
 	}
+
 	return redactSource(strings.TrimSuffix(dep.Repository, "/")) + "/" + dep.Name
 }

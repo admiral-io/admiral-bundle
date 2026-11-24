@@ -52,11 +52,13 @@ func TestSelectVersion(t *testing.T) {
 	for _, s := range []string{"9.1.0-rc1", "9.0.0", "8.1.1", "8.1.0", "8.0.0", "7.9.0"} {
 		vs = append(vs, version.Must(version.NewVersion(s)))
 	}
+
 	pick := func(c string) string {
 		v, err := selectVersion(vs, c)
 		if err != nil {
 			return err.Error()
 		}
+
 		return v.Original()
 	}
 	assert.Equal(t, "8.1.1", pick("~> 8.0"))
@@ -97,6 +99,7 @@ const fakeHost = "example.test"
 
 func newFakeRegistry(t *testing.T, versions []string, location, shape string) *fakeRegistry {
 	t.Helper()
+
 	pkg := fakePkg
 	f := &fakeRegistry{versions: versions, location: location, shape: shape}
 	mux := http.NewServeMux()
@@ -105,10 +108,12 @@ func newFakeRegistry(t *testing.T, versions []string, location, shape string) *f
 	})
 	mux.HandleFunc("/api/modules/"+pkg+"/versions", func(w http.ResponseWriter, r *http.Request) {
 		f.tokens = append(f.tokens, r.Header.Get("Authorization"))
+
 		var vs []map[string]string
 		for _, v := range f.versions {
 			vs = append(vs, map[string]string{"version": v})
 		}
+
 		_ = json.NewEncoder(w).Encode(map[string]any{"modules": []any{map[string]any{"versions": vs}}})
 	})
 	mux.HandleFunc("/api/modules/"+pkg+"/", func(w http.ResponseWriter, r *http.Request) {
@@ -116,6 +121,7 @@ func newFakeRegistry(t *testing.T, versions []string, location, shape string) *f
 			http.NotFound(w, r)
 			return
 		}
+
 		switch f.shape {
 		case "header":
 			w.Header().Set("X-Terraform-Get", f.location)
@@ -126,6 +132,7 @@ func newFakeRegistry(t *testing.T, versions []string, location, shape string) *f
 	})
 	f.srv = httptest.NewServer(mux)
 	t.Cleanup(f.srv.Close)
+
 	return f
 }
 
@@ -142,11 +149,13 @@ func (s staticCreds) Lookup(_ context.Context, rawURL string) (*Credential, erro
 	if tok, ok := s[hostOf(rawURL)]; ok {
 		return &Credential{Token: tok}, nil
 	}
+
 	return nil, nil
 }
 
 func TestRegistryClient(t *testing.T) {
 	ctx := context.Background()
+
 	for _, shape := range []string{"header", "body"} {
 		t.Run(shape, func(t *testing.T) {
 			fake := newFakeRegistry(t, []string{"1.0.0", "1.2.0", "1.1.0"}, "git::https://example.invalid/acme/net?ref=abc", shape)
@@ -173,6 +182,7 @@ func TestRegistryClient(t *testing.T) {
 		fake := newFakeRegistry(t, []string{"1.0.0"}, "/archives/net-1.0.0.tgz", "header")
 		r := newRegistryClient(Options{})
 		fake.seed(r)
+
 		m := mustParse(t, "example.test/acme/net/google")
 		loc, err := r.Location(ctx, m.Package, version.Must(version.NewVersion("1.0.0")))
 		require.NoError(t, err)
@@ -199,15 +209,20 @@ func (testGit) Clone(ctx context.Context, u *url.URL, ref, dst string, cred *Cre
 // tgz builds a gzipped tar of files under one top-level directory.
 func tgz(t *testing.T, top string, files map[string]string) []byte {
 	t.Helper()
+
 	var buf bytes.Buffer
+
 	gz := gzip.NewWriter(&buf)
+
 	tw := tar.NewWriter(gz)
 	for name, data := range files {
 		require.NoError(t, tw.WriteHeader(&tar.Header{Name: top + "/" + name, Mode: 0o644, Size: int64(len(data)), Typeflag: tar.TypeReg}))
 		_, _ = tw.Write([]byte(data))
 	}
+
 	require.NoError(t, tw.Close())
 	require.NoError(t, gz.Close())
+
 	return buf.Bytes()
 }
 
@@ -217,13 +232,16 @@ func closeInStage(t *testing.T, root string, f *fetcher) (stage string, vendored
 	require.NoError(t, copyTree(root, stage, root, false))
 	vendored, err := closeTerraform(context.Background(), root, stage, f)
 	require.NoError(t, err)
+
 	return stage, vendored
 }
 
 func readStage(t *testing.T, stage, rel string) string {
 	t.Helper()
+
 	b, err := os.ReadFile(filepath.Join(stage, filepath.FromSlash(rel)))
 	require.NoError(t, err, rel)
+
 	return string(b)
 }
 
@@ -353,6 +371,7 @@ func TestCloseHTTPArchive(t *testing.T) {
 			http.NotFound(w, r)
 			return
 		}
+
 		_, _ = w.Write(archive)
 	}))
 	t.Cleanup(srv.Close)
@@ -376,6 +395,7 @@ func TestCloseHTTPArchive(t *testing.T) {
 
 	// Basic auth reaches the archive host.
 	var seen string
+
 	authed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seen = r.Header.Get("Authorization")
 		_, _ = w.Write(archive)
@@ -396,8 +416,10 @@ func TestCloseHTTPArchive(t *testing.T) {
 
 func mustParse(t *testing.T, s string) tfaddr.Module {
 	t.Helper()
+
 	kind, m := classify(s)
 	require.Equal(t, sourceRegistry, kind, s)
+
 	return m
 }
 
@@ -407,6 +429,7 @@ func TestRegistryDiscovery(t *testing.T) {
 	ctx := context.Background()
 	serve := func(t *testing.T, status int, body string) (*registryClient, string) {
 		t.Helper()
+
 		mux := http.NewServeMux()
 		mux.HandleFunc("/.well-known/terraform.json", func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(status)
@@ -414,8 +437,10 @@ func TestRegistryDiscovery(t *testing.T) {
 		})
 		srv := httptest.NewTLSServer(mux)
 		t.Cleanup(srv.Close)
+
 		r := newRegistryClient(Options{})
 		r.client = srv.Client()
+
 		return r, srv.Listener.Addr().String()
 	}
 
@@ -455,14 +480,17 @@ func TestRegistryVersionsBodyIsBounded(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/modules/"+fakePkg+"/versions", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"modules":[{"versions":[`))
+
 		junk := []byte(`{"version":"1.0.0"},`)
 		for n := 0; n < maxRegistryBody+1; n += len(junk) {
 			_, _ = w.Write(junk)
 		}
+
 		_, _ = w.Write([]byte(`{"version":"1.0.0"}]}]}`))
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
+
 	r := newRegistryClient(Options{})
 	u, _ := url.Parse(srv.URL + "/api/modules/")
 	r.services[fakeHost] = u
@@ -481,6 +509,7 @@ func TestRegistryMayNotAnswerWithALocalPath(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(root, "main.tf"), []byte(`module "b" { source = "example.test/acme/net/google" }`), 0o644))
 	f := newFetcher(t.TempDir(), Options{Git: testGit{}})
 	fake.seed(f.registry)
+
 	stage := t.TempDir()
 	require.NoError(t, copyTree(root, stage, root, false))
 	_, err := closeTerraform(context.Background(), root, stage, f)
@@ -493,24 +522,32 @@ func TestRegistryMayNotAnswerWithALocalPath(t *testing.T) {
 // the order given.
 func untar(t *testing.T, entries ...entry) *bytes.Reader {
 	t.Helper()
+
 	var buf bytes.Buffer
+
 	tw := tar.NewWriter(&buf)
+
 	for _, e := range entries {
 		typ := e.typ
 		if typ == 0 {
 			typ = tar.TypeReg
 		}
+
 		hdr := &tar.Header{Name: e.name, Mode: 0o644, Typeflag: typ, Linkname: e.link, Size: int64(len(e.data))}
 		if typ != tar.TypeReg {
 			hdr.Size = 0
 		}
+
 		require.NoError(t, tw.WriteHeader(hdr))
+
 		if typ == tar.TypeReg {
 			_, err := tw.Write([]byte(e.data))
 			require.NoError(t, err)
 		}
 	}
+
 	require.NoError(t, tw.Close())
+
 	return bytes.NewReader(buf.Bytes())
 }
 
@@ -557,6 +594,7 @@ func TestUntarRefusesEscapingNamesAndKeepsOddOnes(t *testing.T) {
 		err := Untar(untar(t, entry{name: name, data: "x"}), t.TempDir())
 		assert.ErrorIs(t, err, ErrBadPath, name)
 	}
+
 	err := Untar(untar(t, entry{name: "dev", typ: tar.TypeChar}), t.TempDir())
 	assert.ErrorIs(t, err, ErrEntryKind)
 }
@@ -565,16 +603,19 @@ func TestUntarIsBounded(t *testing.T) {
 	// A header may claim any size; the budget is checked before a byte is
 	// read, so a bomb costs nothing.
 	var buf bytes.Buffer
+
 	tw := tar.NewWriter(&buf)
 	require.NoError(t, tw.WriteHeader(&tar.Header{Name: "big", Typeflag: tar.TypeReg, Mode: 0o644, Size: MaxUncompressed + 1}))
 	err := Untar(bytes.NewReader(buf.Bytes()), t.TempDir())
 	assert.ErrorIs(t, err, ErrTooLarge)
 
 	buf.Reset()
+
 	tw = tar.NewWriter(&buf)
 	for i := 0; i <= maxEntries; i++ {
 		require.NoError(t, tw.WriteHeader(&tar.Header{Name: "d/" + strings.Repeat("x", 3) + string(rune('a'+i%26)), Typeflag: tar.TypeDir, Mode: 0o755}))
 	}
+
 	require.NoError(t, tw.Close())
 	err = Untar(bytes.NewReader(buf.Bytes()), t.TempDir())
 	assert.ErrorIs(t, err, ErrTooManyEntries)
@@ -586,6 +627,7 @@ func TestUntarIsBounded(t *testing.T) {
 func TestPackRefusesASubdirThatClimbs(t *testing.T) {
 	src := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(src, "main.tf"), []byte(""), 0o644))
+
 	for _, subdir := range []string{"..", "../..", "a/../..", "/etc"} {
 		root := t.TempDir()
 		require.NoError(t, os.WriteFile(filepath.Join(root, "main.tf"), []byte(`module "x" { source = "file::`+src+`//`+subdir+`" }`), 0o644))
@@ -601,6 +643,7 @@ func TestPackRefusesASubdirThatClimbs(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(root, "main.tf"), []byte(`module "b" { source = "example.test/acme/net/google" }`), 0o644))
 	f := newFetcher(t.TempDir(), Options{Git: testGit{}})
 	fake.seed(f.registry)
+
 	stage := t.TempDir()
 	require.NoError(t, copyTree(root, stage, root, false))
 	_, err := closeTerraform(context.Background(), root, stage, f)
@@ -627,11 +670,13 @@ func (g shortGit) Clone(_ context.Context, _ *url.URL, _, dst string, _ *Credent
 func TestFetchGitRequiresAFullCommitHash(t *testing.T) {
 	root := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(root, "main.tf"), []byte(`module "a" { source = "git::https://example.test/acme/x.git" }`), 0o644))
+
 	for _, bad := range []string{"main", "abc123def456", "error: not found", "ABCDEF0123456789ABCDEF0123456789ABCDEF01"} {
 		_, err := PackContext(context.Background(), root, Options{Git: shortGit{bad}})
 		require.Error(t, err, bad)
 		assert.Contains(t, err.Error(), "not a commit", bad)
 	}
+
 	assert.True(t, isCommitHash("0123456789abcdef0123456789abcdef01234567"))
 	assert.True(t, isCommitHash("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"))
 }

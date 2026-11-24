@@ -88,9 +88,11 @@ func classify(source string) (sourceKind, tfaddr.Module) {
 		strings.HasPrefix(source, "${"):
 		return sourceNonLiteral, tfaddr.Module{}
 	}
+
 	if m, err := tfaddr.ParseModuleSource(source); err == nil {
 		return sourceRegistry, m
 	}
+
 	if forced, _ := forcedGetter(source); forced != "" {
 		switch forced {
 		case "git", "http", "https", "file":
@@ -98,6 +100,7 @@ func classify(source string) (sourceKind, tfaddr.Module) {
 			return sourceUnsupported, tfaddr.Module{}
 		}
 	}
+
 	return sourceRemote, tfaddr.Module{}
 }
 
@@ -108,6 +111,7 @@ func forcedGetter(source string) (string, string) {
 	if m := forcedPattern.FindStringSubmatch(source); m != nil {
 		return m[1], m[2]
 	}
+
 	return "", source
 }
 
@@ -162,6 +166,7 @@ func newFetcher(dir string, opts Options) *fetcher {
 		XTerraformGetDisabled: true,
 		DoNotCheckHeadFirst:   true,
 	}
+
 	return &fetcher{
 		dir:      dir,
 		registry: newRegistryClient(opts),
@@ -210,33 +215,41 @@ func (f *fetcher) resolve(ctx context.Context, call *tfconfig.ModuleCall) (*fetc
 
 func (f *fetcher) resolveRegistry(ctx context.Context, call *tfconfig.ModuleCall, addr tfaddr.Module) (*fetched, string, error) {
 	pkg := addr.Package
+
 	versions, err := f.registry.Versions(ctx, pkg)
 	if err != nil {
 		return nil, "", err
 	}
+
 	v, err := selectVersion(versions, call.Version)
 	if err != nil {
 		return nil, "", fmt.Errorf("%s: %w", registryAddress(pkg), err)
 	}
+
 	key := "registry|" + registryAddress(pkg) + "|" + v.Original()
 	if t, ok := f.trees[key]; ok {
 		subdir, err := cleanSubdir(path.Join(t.locSubdir, addr.Subdir))
 		if err != nil {
 			return nil, "", fmt.Errorf("%s %s: %w", registryAddress(pkg), v, err)
 		}
+
 		return t, subdir, nil
 	}
+
 	location, err := f.registry.Location(ctx, pkg, v)
 	if err != nil {
 		return nil, "", err
 	}
+
 	// The registry's answer may itself carry a subdirectory: the package
 	// is the repository, the module is a directory in it.
 	location, locSubdir := getter.SourceDirSubdir(location)
+
 	abs, _, err := f.fetch(ctx, location, false)
 	if err != nil {
 		return nil, "", fmt.Errorf("%s %s: %w", registryAddress(pkg), v, err)
 	}
+
 	t := &fetched{
 		abs:       abs,
 		prefix:    path.Join(vendorDir, registryHost(pkg), pkg.ForRegistryProtocol(), v.Original()),
@@ -245,10 +258,12 @@ func (f *fetcher) resolveRegistry(ctx context.Context, call *tfconfig.ModuleCall
 	}
 	f.trees[key] = t
 	f.pins = append(f.pins, t.pin)
+
 	subdir, err := cleanSubdir(path.Join(locSubdir, addr.Subdir))
 	if err != nil {
 		return nil, "", fmt.Errorf("%s %s: %w", registryAddress(pkg), v, err)
 	}
+
 	return t, subdir, nil
 }
 
@@ -266,21 +281,26 @@ func (f *fetcher) resolveNetwork(ctx context.Context, source string) (*fetched, 
 
 func (f *fetcher) resolveSource(ctx context.Context, source string, local bool) (*fetched, string, error) {
 	base, subdir := getter.SourceDirSubdir(source)
+
 	subdir, err := cleanSubdir(subdir)
 	if err != nil {
 		return nil, "", fmt.Errorf("%s: %w", redactSource(source), err)
 	}
+
 	key := "remote|" + base
 	if t, ok := f.trees[key]; ok {
 		return t, subdir, nil
 	}
+
 	abs, t, err := f.fetch(ctx, base, local)
 	if err != nil {
 		return nil, "", fmt.Errorf("%s: %w", redactSource(source), err)
 	}
+
 	t.abs = abs
 	f.trees[key] = t
 	f.pins = append(f.pins, t.pin)
+
 	return t, subdir, nil
 }
 
@@ -292,10 +312,12 @@ func cleanSubdir(subdir string) (string, error) {
 	if subdir == "" {
 		return "", nil
 	}
+
 	name, ok := cleanPath(subdir)
 	if !ok {
 		return "", fmt.Errorf("%w: subdirectory %q", ErrFetchedEscapes, subdir)
 	}
+
 	return name, nil
 }
 
@@ -309,20 +331,25 @@ func withinBoundary(boundary, p string) error {
 	if boundary == "" {
 		return nil
 	}
+
 	realBoundary, err := filepath.EvalSymlinks(boundary)
 	if err != nil {
 		return fmt.Errorf("boundary %s: %w", boundary, err)
 	}
+
 	realP, err := filepath.EvalSymlinks(p)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
 		}
+
 		return err
 	}
+
 	if !inside(realBoundary, realP) {
 		return fmt.Errorf("%w: %s is not under %s", ErrOutsideBoundary, p, boundary)
 	}
+
 	return nil
 }
 
@@ -348,24 +375,30 @@ func (f *fetcher) fetch(ctx context.Context, source string, local bool) (string,
 	dst := filepath.Join(f.dir, fmt.Sprintf("tree-%d", f.n))
 
 	req := &getter.Request{Src: source, Dst: dst, GetMode: getter.ModeDir}
+
 	var matched getter.Getter
+
 	for _, g := range f.getter.Getters {
 		ok, err := getter.Detect(req, g)
 		if err != nil {
 			return "", nil, err
 		}
+
 		if ok {
 			matched = g
 			break
 		}
 	}
+
 	if matched == nil {
 		return "", nil, fmt.Errorf("%w: %s", ErrSourceUnsupported, redactSource(source))
 	}
+
 	// Detection may have rewritten the source (shorthand to URL) and may
 	// have found a subdirectory in the rewritten form; the caller split its
 	// own already, so any left here is part of the address itself.
 	detected, _ := getter.SourceDirSubdir(req.Src)
+
 	u, err := url.Parse(detected)
 	if err != nil {
 		return "", nil, fmt.Errorf("%s: %w", redactSource(source), err)
@@ -379,6 +412,7 @@ func (f *fetcher) fetch(ctx context.Context, source string, local bool) (string,
 		if u.Scheme == "file" && f.dial != nil {
 			return "", nil, fmt.Errorf("%w: %s", ErrLocalSource, redactSource(source))
 		}
+
 		return f.fetchGit(ctx, source, u, dst)
 	case *getter.HttpGetter:
 		return f.fetchArchive(ctx, source, u, dst)
@@ -388,13 +422,16 @@ func (f *fetcher) fetch(ctx context.Context, source string, local bool) (string,
 		if !local {
 			return "", nil, fmt.Errorf("%w: %s", ErrLocalSource, redactSource(source))
 		}
+
 		if err := withinBoundary(f.boundary, filepath.FromSlash(u.Path)); err != nil {
 			return "", nil, fmt.Errorf("%s: %w", redactSource(source), err)
 		}
+
 		req.Src, req.Copy = u.String(), true
 		if _, err := f.getter.Get(ctx, req); err != nil {
 			return "", nil, err
 		}
+
 		return dst, &fetched{
 			prefix: path.Join(vendorDir, "file", strings.TrimPrefix(filepath.ToSlash(filepath.Clean(u.Path)), "/")),
 			pin:    Pin{Source: redactSource(source)},
@@ -412,23 +449,29 @@ func (f *fetcher) fetchGit(ctx context.Context, source string, u *url.URL, dst s
 	if strings.HasPrefix(ref, "-") {
 		return "", nil, fmt.Errorf("%w: %q for %s", ErrRefInvalid, ref, written)
 	}
+
 	var cred *Credential
+
 	if f.creds != nil {
 		var err error
 		if cred, err = f.creds.Lookup(ctx, u.String()); err != nil {
 			return "", nil, err
 		}
 	}
+
 	if cred != nil && u.Scheme == "http" && !f.insecure {
 		return "", nil, fmt.Errorf("%w: %s to %s", ErrInsecureHTTP, cred.family(), written)
 	}
+
 	sha, err := f.git.Clone(ctx, u, ref, dst, cred)
 	if err != nil {
 		return "", nil, err
 	}
+
 	if !isCommitHash(sha) {
 		return "", nil, fmt.Errorf("git transport returned %q for %s, not a commit", sha, written)
 	}
+
 	return dst, &fetched{
 		prefix: path.Join(vendorDir, RepoKey(u), sha[:12]),
 		pin:    Pin{Source: written, Constraint: ref, Resolved: sha},
@@ -456,29 +499,36 @@ func (f *fetcher) fetchArchive(ctx context.Context, source string, u *url.URL, d
 	if err != nil {
 		return "", nil, err
 	}
+
 	req.Header.Set("User-Agent", userAgent)
+
 	if f.creds != nil {
 		cred, err := f.creds.Lookup(ctx, u.String())
 		if err != nil {
 			return "", nil, err
 		}
+
 		if err := cred.authorize(req, f.insecure); err != nil {
 			return "", nil, err
 		}
 	}
+
 	resp, err := f.http.Do(req)
 	if err != nil {
 		return "", nil, err
 	}
 	defer resp.Body.Close()
+
 	if resp.StatusCode != http.StatusOK {
 		return "", nil, fmt.Errorf("GET %s: %s", redactURL(u), resp.Status)
 	}
+
 	archive, err := os.CreateTemp(f.dir, "archive-*")
 	if err != nil {
 		return "", nil, err
 	}
 	defer os.Remove(archive.Name())
+
 	h := sha256.New()
 	// The archive is bounded by what it may expand to; a download past that
 	// cannot be a module either.
@@ -486,12 +536,15 @@ func (f *fetcher) fetchArchive(ctx context.Context, source string, u *url.URL, d
 	if err != nil {
 		return "", nil, errors.Join(err, archive.Close())
 	}
+
 	if err := archive.Close(); err != nil {
 		return "", nil, err
 	}
+
 	if n > MaxUncompressed {
 		return "", nil, fmt.Errorf("GET %s: %w", redactURL(u), ErrTooLarge)
 	}
+
 	digest := hex.EncodeToString(h.Sum(nil))
 	if checksum != "" && !checksumMatches(checksum, digest) {
 		return "", nil, fmt.Errorf("%s: checksum %q does not match the bytes (sha256:%s)", redactURL(u), checksum, digest)
@@ -504,13 +557,16 @@ func (f *fetcher) fetchArchive(ctx context.Context, source string, u *url.URL, d
 			}
 		}
 	}
+
 	d, ok := f.getter.Decompressors[format]
 	if !ok {
 		return "", nil, fmt.Errorf("%s: not an archive this can unpack (%q)", redactURL(u), path.Base(u.Path))
 	}
+
 	if err := d.Decompress(dst, archive.Name(), true, 0); err != nil {
 		return "", nil, fmt.Errorf("unpack %s: %w", redactURL(u), err)
 	}
+
 	// An archive that holds one top-level directory is that directory, the
 	// way a GitHub tarball is.
 	root := dst
@@ -525,6 +581,7 @@ func (f *fetcher) fetchArchive(ctx context.Context, source string, u *url.URL, d
 	if format != "" {
 		name = strings.TrimSuffix(name, "."+format)
 	}
+
 	return root, &fetched{
 		prefix: path.Join(vendorDir, strings.ToLower(u.Hostname()), name, digest[:12]),
 		pin:    Pin{Source: redactSource(stripForced(source)), Constraint: checksum, Resolved: "sha256:" + digest},
@@ -539,6 +596,7 @@ func checksumMatches(checksum, sha256hex string) bool {
 	if !ok {
 		return strings.EqualFold(checksum, sha256hex)
 	}
+
 	return strings.EqualFold(algo, "sha256") && strings.EqualFold(hexsum, sha256hex)
 }
 
@@ -554,10 +612,12 @@ func stripForced(source string) string {
 func RepoKey(u *url.URL) string {
 	host := strings.ToLower(u.Hostname())
 	p := strings.Trim(u.Path, "/")
+
 	p = strings.TrimSuffix(p, ".git")
 	if host == "" {
 		return path.Join("file", p)
 	}
+
 	return path.Join(host, p)
 }
 
@@ -571,12 +631,15 @@ func RepoKeyOf(remote string) string {
 				return RepoKey(&url.URL{Host: host, Path: p})
 			}
 		}
+
 		return RepoKey(&url.URL{Path: remote})
 	}
+
 	u, err := url.Parse(remote)
 	if err != nil {
 		return ""
 	}
+
 	return RepoKey(u)
 }
 
@@ -590,6 +653,7 @@ func Untar(r io.Reader, dst string) error {
 	if err := os.MkdirAll(dst, 0o755); err != nil {
 		return err
 	}
+
 	root, err := os.OpenRoot(dst)
 	if err != nil {
 		return err
@@ -597,29 +661,37 @@ func Untar(r io.Reader, dst string) error {
 	defer root.Close()
 
 	tr := tar.NewReader(r)
+
 	var (
 		total   int64
 		entries int
 	)
+
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
 			return nil
 		}
+
 		if err != nil {
 			return err
 		}
+
 		if entries++; entries > maxEntries {
 			return fmt.Errorf("%w: more than %d", ErrTooManyEntries, maxEntries)
 		}
+
 		name, ok := cleanPath(hdr.Name)
 		if !ok {
 			return fmt.Errorf("%w: %q", ErrBadPath, hdr.Name)
 		}
+
 		if name == "" {
 			continue
 		}
+
 		target := filepath.FromSlash(name)
+
 		switch hdr.Typeflag {
 		case tar.TypeDir:
 			if err := root.MkdirAll(target, 0o755); err != nil {
@@ -629,9 +701,11 @@ func Untar(r io.Reader, dst string) error {
 			if !linkStaysInside(name, hdr.Linkname) {
 				return fmt.Errorf("%w: symlink %q -> %q escapes the tree", ErrBadPath, name, hdr.Linkname)
 			}
+
 			if err := root.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 				return err
 			}
+
 			if err := root.Symlink(filepath.FromSlash(hdr.Linkname), target); err != nil {
 				return err
 			}
@@ -639,29 +713,36 @@ func Untar(r io.Reader, dst string) error {
 			if hdr.Size < 0 {
 				return fmt.Errorf("%w: %s has a negative size", ErrBadPath, name)
 			}
+
 			if total += hdr.Size; total > MaxUncompressed {
 				return ErrTooLarge
 			}
+
 			mode := os.FileMode(0o644)
 			if hdr.Mode&0o111 != 0 {
 				mode = 0o755
 			}
+
 			if err := root.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 				return err
 			}
+
 			out, err := root.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
 			if err != nil {
 				return err
 			}
+
 			// The header's size is what was budgeted; a stream that carries
 			// more than it declared is malformed, not merely large.
 			n, err := io.Copy(out, io.LimitReader(tr, hdr.Size+1))
 			if err != nil {
 				return errors.Join(err, out.Close())
 			}
+
 			if err := out.Close(); err != nil {
 				return err
 			}
+
 			if n != hdr.Size {
 				return fmt.Errorf("%w: %s is not the size its header claims", ErrBadPath, name)
 			}

@@ -88,6 +88,7 @@ func (c *Credential) authorize(req *http.Request, insecure bool) error {
 	case c.Token != "":
 		req.Header.Set("Authorization", "Bearer "+c.Token)
 	}
+
 	return nil
 }
 
@@ -116,19 +117,24 @@ func (a *AmbientCredentials) Lookup(_ context.Context, rawURL string) (*Credenti
 	if host == "" {
 		return nil, nil
 	}
+
 	if tok := a.fromEnv(host); tok != "" {
 		return &Credential{Token: tok}, nil
 	}
+
 	tok, err := a.fromConfig(host)
 	if err != nil {
 		return nil, err
 	}
+
 	if tok != "" {
 		return &Credential{Token: tok}, nil
 	}
+
 	if c, err := a.fromHelmRepositories(rawURL); err != nil || c != nil {
 		return c, err
 	}
+
 	return a.fromGitCredentials(rawURL)
 }
 
@@ -141,23 +147,29 @@ func (a *AmbientCredentials) fromGitCredentials(rawURL string) (*Credential, err
 	if err != nil {
 		return nil, nil //nolint:nilerr // not an https URL git would store a credential for
 	}
+
 	if (u.Scheme != "https" && u.Scheme != "http") || a.home == "" {
 		return nil, nil
 	}
+
 	host := strings.ToLower(u.Hostname())
 
 	for _, name := range []string{".netrc", "_netrc"} {
 		p := filepath.Join(a.home, name)
+
 		src, err := os.ReadFile(p)
 		if errors.Is(err, os.ErrNotExist) {
 			continue
 		}
+
 		if err != nil {
 			return nil, err
 		}
+
 		if c := netrcEntry(string(src), host); c != nil {
 			return c, nil
 		}
+
 		break
 	}
 
@@ -165,27 +177,35 @@ func (a *AmbientCredentials) fromGitCredentials(rawURL string) (*Credential, err
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
+
 	if err != nil {
 		return nil, err
 	}
+
 	for _, line := range strings.Split(string(src), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
+
 		stored, err := url.Parse(line)
 		if err != nil || stored.User == nil || !strings.EqualFold(stored.Hostname(), host) {
 			continue
 		}
+
 		if stored.Scheme != u.Scheme {
 			continue
 		}
+
 		if stored.Path != "" && stored.Path != "/" && !strings.HasPrefix(u.Path, stored.Path) {
 			continue
 		}
+
 		pw, _ := stored.User.Password()
+
 		return &Credential{Basic: &BasicAuth{Username: stored.User.Username(), Password: pw}}, nil
 	}
+
 	return nil, nil
 }
 
@@ -194,7 +214,9 @@ func (a *AmbientCredentials) fromGitCredentials(rawURL string) (*Credential, err
 func netrcEntry(src, host string) *Credential {
 	fields := strings.Fields(src)
 	entries := map[string]*BasicAuth{}
+
 	var cur *BasicAuth
+
 	for i := 0; i < len(fields); i++ {
 		switch fields[i] {
 		case "machine":
@@ -221,6 +243,7 @@ func netrcEntry(src, host string) *Credential {
 			return pick(entries, host)
 		}
 	}
+
 	return pick(entries, host)
 }
 
@@ -230,6 +253,7 @@ func pick(entries map[string]*BasicAuth, host string) *Credential {
 			return &Credential{Basic: e}
 		}
 	}
+
 	return nil
 }
 
@@ -242,15 +266,19 @@ func (a *AmbientCredentials) fromHelmRepositories(rawURL string) (*Credential, e
 		if a.home == "" {
 			return nil, nil
 		}
+
 		p = filepath.Join(helmConfigDir(a.home, a.envValue("XDG_CONFIG_HOME")), "repositories.yaml")
 	}
+
 	src, err := os.ReadFile(p)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
+
 	if err != nil {
 		return nil, err
 	}
+
 	var f struct {
 		Repositories []struct {
 			URL      string `yaml:"url"`
@@ -261,18 +289,23 @@ func (a *AmbientCredentials) fromHelmRepositories(rawURL string) (*Credential, e
 	if err := yaml.Unmarshal(src, &f); err != nil {
 		return nil, fmt.Errorf("%s: %w", p, err)
 	}
+
 	var best *Credential
+
 	bestLen := 0
+
 	want := canonicalURL(rawURL)
 	for _, r := range f.Repositories {
 		u := canonicalURL(r.URL)
 		if r.Username == "" || u == "" {
 			continue
 		}
+
 		if (want == u || strings.HasPrefix(want, u+"/")) && len(u) > bestLen {
 			best, bestLen = &Credential{Basic: &BasicAuth{Username: r.Username, Password: r.Password}}, len(u)
 		}
 	}
+
 	return best, nil
 }
 
@@ -281,12 +314,15 @@ func (a *AmbientCredentials) fromHelmRepositories(rawURL string) (*Credential, e
 // left alone; it is not.
 func canonicalURL(rawURL string) string {
 	rawURL = strings.TrimSuffix(rawURL, "/")
+
 	u, err := url.Parse(rawURL)
 	if err != nil || u.Scheme == "" || u.Host == "" {
 		return rawURL
 	}
+
 	u.Scheme = strings.ToLower(u.Scheme)
 	u.Host = strings.ToLower(u.Host)
+
 	return u.String()
 }
 
@@ -296,9 +332,11 @@ func helmConfigDir(home, xdg string) string {
 	if xdg != "" {
 		return filepath.Join(xdg, "helm")
 	}
+
 	if runtime.GOOS == "darwin" {
 		return filepath.Join(home, "Library", "Preferences", "helm")
 	}
+
 	return filepath.Join(home, ".config", "helm")
 }
 
@@ -306,12 +344,14 @@ func helmConfigDir(home, xdg string) string {
 // case-insensitively the way tofu matches it.
 func (a *AmbientCredentials) fromEnv(host string) string {
 	want := "TF_TOKEN_" + strings.NewReplacer("-", "__", ".", "_").Replace(host)
+
 	for _, kv := range a.environ {
 		name, value, ok := strings.Cut(kv, "=")
 		if ok && strings.EqualFold(name, want) && value != "" {
 			return value
 		}
 	}
+
 	return ""
 }
 
@@ -324,35 +364,45 @@ func (a *AmbientCredentials) fromConfig(host string) (string, error) {
 	} else if a.home != "" {
 		candidates = append(candidates, filepath.Join(a.home, ".tofurc"), filepath.Join(a.home, ".terraformrc"))
 	}
+
 	for _, p := range candidates {
 		src, err := os.ReadFile(p)
 		if errors.Is(err, os.ErrNotExist) {
 			continue
 		}
+
 		if err != nil {
 			return "", err
 		}
+
 		tok, err := credentialsFromHCL(src, p, host)
 		if err != nil {
 			return "", err
 		}
+
 		if tok != "" {
 			return tok, nil
 		}
+
 		break // tofu reads one configuration file, the first that exists
 	}
+
 	if a.home == "" {
 		return "", nil
 	}
+
 	for _, dir := range []string{".terraform.d", ".tofu.d"} {
 		p := filepath.Join(a.home, dir, "credentials.tfrc.json")
+
 		src, err := os.ReadFile(p)
 		if errors.Is(err, os.ErrNotExist) {
 			continue
 		}
+
 		if err != nil {
 			return "", err
 		}
+
 		var f struct {
 			Credentials map[string]struct {
 				Token string `json:"token"`
@@ -361,12 +411,14 @@ func (a *AmbientCredentials) fromConfig(host string) (string, error) {
 		if err := json.Unmarshal(src, &f); err != nil {
 			return "", fmt.Errorf("%s: %w", p, err)
 		}
+
 		for h, c := range f.Credentials {
 			if strings.EqualFold(h, host) && c.Token != "" {
 				return c.Token, nil
 			}
 		}
 	}
+
 	return "", nil
 }
 
@@ -376,6 +428,7 @@ func (a *AmbientCredentials) envValue(name string) string {
 			return v
 		}
 	}
+
 	return ""
 }
 
@@ -385,32 +438,39 @@ func credentialsFromHCL(src []byte, filename, host string) (string, error) {
 	if diags.HasErrors() {
 		return "", fmt.Errorf("%s: %s", filename, diags.Error())
 	}
+
 	content, _, diags := f.Body.PartialContent(&hcl.BodySchema{
 		Blocks: []hcl.BlockHeaderSchema{{Type: "credentials", LabelNames: []string{"host"}}},
 	})
 	if diags.HasErrors() {
 		return "", fmt.Errorf("%s: %s", filename, diags.Error())
 	}
+
 	for _, b := range content.Blocks {
 		if !strings.EqualFold(b.Labels[0], host) {
 			continue
 		}
+
 		attrs, diags := b.Body.JustAttributes()
 		if diags.HasErrors() {
 			return "", fmt.Errorf("%s: %s", filename, diags.Error())
 		}
+
 		tok, ok := attrs["token"]
 		if !ok {
 			continue
 		}
+
 		v, diags := tok.Expr.Value(nil)
 		if diags.HasErrors() || v.IsNull() || v.Type() != cty.String {
 			continue
 		}
+
 		if s := v.AsString(); s != "" {
 			return s, nil
 		}
 	}
+
 	return "", nil
 }
 
@@ -420,9 +480,11 @@ func hostOf(rawURL string) string {
 	if !strings.Contains(rawURL, "://") {
 		return strings.ToLower(strings.TrimSuffix(rawURL, "/"))
 	}
+
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return ""
 	}
+
 	return strings.ToLower(u.Hostname())
 }
